@@ -1,3 +1,5 @@
+""" Credit: Joel Leja (with few edits by Gautam Nagaraj) """
+
 import numpy as np
 import threedhst_params as pfile
 import pickle

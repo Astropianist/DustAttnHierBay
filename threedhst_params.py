@@ -1,3 +1,5 @@
+""" Credit: Joel Leja """
+
 import numpy as np
 import os
 from prospect.models import priors, sedmodel
