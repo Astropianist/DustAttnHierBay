@@ -4,6 +4,8 @@ import argparse as ap
 from subprocess import run
 from DustPymc3_Final import parse_args, make_prop_dict, label_creation
 
+""" Create and run a batch job for the dust attenuation code using SLURM for a given set of conditions """
+
 def main():
     # Get parameters of the run
     argv = sys.argv

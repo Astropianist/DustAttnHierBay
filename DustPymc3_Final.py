@@ -1,3 +1,9 @@
+""" Modeling dust attenuation curves (diffuse dust optical depth and slope of the curve) as a function of 1 or more of the following physical parameters: stellar mass, specific star formation rate, metallicity, redshift, inclination, diffuse dust optical depth (if not the dependent variable), birth cloud dust optical depth.
+
+We use hierarchical models with importance sampling techniques (to be able to use posterior samples from Prospector, the code applied to individual galaxies) in the Pymc3 framework.
+
+Author: Gautam Nagaraj """
+
 import numpy as np
 import pickle
 import pymc3 as pm 
@@ -26,6 +32,7 @@ cores = 4
 def mass_completeness(zred):
     """used mass-completeness estimates from Tal+14, for FAST masses
     then applied M_PROSP / M_FAST to estimate Prospector completeness
+    Credit: Joel Leja
     """
 
     zref = np.array([0.65,1,1.5,2.1,3.0])

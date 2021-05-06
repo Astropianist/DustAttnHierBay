@@ -1,5 +1,5 @@
 #
-# Elliptical slice sampling
+# Elliptical slice sampling; Credit: https://github.com/jobovy/bovy_mcmc/blob/master/bovy_mcmc/elliptical_slice.py
 #
 import math
 import numpy

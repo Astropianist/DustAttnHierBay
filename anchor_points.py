@@ -1,6 +1,11 @@
 import numpy as np
 import theano.tensor as tt
 
+""" Getting coefficients of a degree n polynomial of one or more variables based on the values of the polynomial on a grid with the requisite number of points. For example, to fit a degree 4 polynomial of two variables, a 5x5 (25 point) grid is needed. To fit a degree 2 polynomial of four variables, a 3x3x3x3 (81 point) grid is needed. Another function calculates the polynomial at a new set of points given the coefficients.
+
+Author of generalized polynomial functions: Gautam Nagaraj
+Authors of original 2-D functions: credited in the function documentation
+
 def anchor(x,y,zin,xfirst=None,xlast=None,xdegree=2,\
                    yfirst=None,ylast=None,ydegree=2):
     """ builds an interpolator with (xdegree,ydegree) degrees of freedom
@@ -10,6 +15,7 @@ def anchor(x,y,zin,xfirst=None,xlast=None,xdegree=2,\
         (yfirst,ylast). `zin` are the values of that function. 
 
         it then will evaluate that polynomial at locations x,y, and return that evaluation ('theta')
+        Credit: Joel Leja
     """
 
     # evaluate for different dimensionality
@@ -80,7 +86,7 @@ def polyfit2d(x, y, z, kx=3, ky=3, order=None):
     residuals: np.ndarray
     rank: int
     s: np.ndarray
-
+    Credit: Paddy Harrison on https://stackoverflow.com/questions/33964913/equivalent-of-polyfit-for-a-2d-polynomial-in-python
     '''
 
     # grid coords

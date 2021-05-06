@@ -25,6 +25,7 @@ my_cmap.set_under('lightgrey')
 def mass_completeness(zred):
     """used mass-completeness estimates from Tal+14, for FAST masses
     then applied M_PROSP / M_FAST to estimate Prospector completeness
+    Credit: Joel Leja
     """
 
     zref = np.array([0.65,1,1.5,2.1,3.0])
