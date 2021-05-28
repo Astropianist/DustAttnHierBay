@@ -1,4 +1,5 @@
 import numpy as np
+import pymc3 as pm
 import theano.tensor as tt
 
 """ Getting coefficients of a degree n polynomial of one or more variables based on the values of the polynomial on a grid with the requisite number of points. For example, to fit a degree 4 polynomial of two variables, a 5x5 (25 point) grid is needed. To fit a degree 2 polynomial of four variables, a 3x3x3x3 (81 point) grid is needed. Another function calculates the polynomial at a new set of points given the coefficients.
@@ -179,13 +180,25 @@ def calc_poly(inputarr,coefs,degree):
 
 def calc_poly_tt(inputarr,degree):
     '''Same as calc_poly but just returns the array of (monomial) terms whose tensor dot product with the coefficient array will result in the desired polynomial'''
-    sh = tuple(np.repeat(degree+1,len(inputarr)))
+    sh = tuple(np.repeat(degree+1,inputarr.shape[0]))
     inputsh = inputarr[0].shape
     shlist = list(inputsh)
     shlist.insert(0,np.prod(sh))
     term = np.ones(tuple(shlist))
-
     for index, i in enumerate(np.ndindex(sh)):
         for j,ind in enumerate(i):
+            term[index] *= inputarr[j]**ind
+    return term
+
+def calc_poly_tt_vi(inputarr,degree,input_shape):
+    '''Same as calc_poly but just returns the array of (monomial) terms whose tensor dot product with the coefficient array will result in the desired polynomial'''
+    sh = tuple(np.repeat(degree+1,input_shape[0]))
+    shlist = list(input_shape[1:])
+    shlist.insert(0,np.prod(sh))
+    term = np.ones(tuple(shlist))
+    for index, i in enumerate(np.ndindex(sh)):
+        # print("index, i:", index, i)
+        for j,ind in enumerate(i):
+            # print("j, ind:", j, ind)
             term[index] *= inputarr[j]**ind
     return term

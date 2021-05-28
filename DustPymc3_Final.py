@@ -14,7 +14,7 @@ from time import time
 import theano.tensor as tt
 from distutils.dir_util import mkpath
 import os.path as op
-from anchor_points import get_a_polynd, calc_poly, calc_poly_tt, polyfitnd
+from anchor_points import get_a_polynd, calc_poly, calc_poly_tt, polyfitnd, calc_poly_tt_vi
 import argparse as ap
 from scipy.stats import norm, truncnorm
 from copy import copy, deepcopy
@@ -23,11 +23,21 @@ from sklearn.neighbors import KernelDensity
 from sklearn.model_selection import GridSearchCV
 from multiprocessing import Pool
 from itertools import product
+import logp_funcs.DensityDistFunctions as ddf
+
+sns.set_context("paper") # options include: talk, poster, paper
+sns.set_style("ticks")
+sns.set_style({"xtick.direction": "in","ytick.direction": "in",
+               "xtick.top":True, "ytick.right":True,
+               "xtick.major.size":12, "xtick.minor.size":4,
+               "ytick.major.size":12, "ytick.minor.size":4,
+               })
 
 min_pdf = 1.0e-15
 ssfr_lim_prior = -15.0
 ssfr_lims_data = (-14.5,-7.0)
 cores = 4
+batch_size = 500
 
 def mass_completeness(zred):
     """used mass-completeness estimates from Tal+14, for FAST masses
@@ -78,10 +88,14 @@ def parse_args(argv=None):
     args = parser.parse_args(args=argv)
     args.d1 = 0; args.d2 = 0; args.i = 0
     if not args.n: args.d2_mod = 0
+    if args.real: 
+        if args.size==-1: args.dir_orig = 'Full'
+        else: args.dir_orig = 'NewTests'
+    else: args.dir_orig = 'PolyGen'
 
     return args
 
-def polyNDgen(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extratext='',nlim=np.array([-1.0,0.4]),degree=2,degree2=1,sampling=1000,tune=1000,errmult=1.0,errmultn=1.0,indep_true=None,sigarr=None,sigN=0.19,n=None,limlist2=None,indep_true2=None,sigarr2=None,indep_name=None,indep_name2=None):
+def polyNDgen(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extratext='',nlim=np.array([-1.0,0.4]),degree=2,degree2=1,sampling=1000,tune=1000,errmult=1.0,errmultn=1.0,indep_true=None,sigarr=None,sigN=0.19,n=None,limlist2=None,indep_true2=None,sigarr2=None,indep_name=None,indep_name2=None,var_inf=False,numtrials=30000,minibatch_size=batch_size):
     ''' Simulation of data where the dust index n is a 2-D polynomial function of stellar mass and sSFR.
 
     Parameters
@@ -232,7 +246,17 @@ def polyNDgen(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extratext
 
     n_samp = n_true[:, None] + sigN * np.random.randn(size, 1) + sigN * np.random.randn(size, samples)
     # 3-D array that will be multiplied by coefficients to calculate the dust parameter at the observed independent variable values
-    term = calc_poly_tt(indep_samp2,degree2)
+    if var_inf:
+        batch_dep = pm.Minibatch(n_samp,batch_size=minibatch_size)
+        batch_indep = pm.Minibatch(indep_samp2,batch_size=[indep_samp2.shape[0],minibatch_size])
+        # term_orig = calc_poly_tt(indep_samp2,degree2)
+        # term = pm.Minibatch(term_orig,batch_size=[term_orig.shape[0],minibatch_size)
+        # batch_dep = n_samp
+        # term = term_orig
+        # breakpoint()
+    else: 
+        term = calc_poly_tt(indep_samp2,degree2)
+        batch_dep = n_samp
     # breakpoint()
     # Pymc3 model creation
     with pm.Model() as model:
@@ -244,19 +268,38 @@ def polyNDgen(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extratext
 
         # Compute the expected n at each sample
         coefs = tt.dot(aTinv2,ngrid)
+        if var_inf:
+            term = calc_poly_tt_vi(batch_indep,degree2,(indep_samp2.shape[0],minibatch_size,indep_samp2.shape[2]))
         mu = tt.tensordot(coefs,term,axes=1)
 
-        # The line has some width: we're calling it a Gaussian in n
-        logp = -0.5 * (n_samp - mu) ** 2 * pm.math.exp(-2*log_width) - log_width
+        if var_inf: 
+            # The line has some width: we're calling it a Gaussian in n
+            # logp = -0.5 * (batch_dep - mu) ** 2 * pm.math.exp(-2*log_width) - log_width
 
-        # Compute the marginalized likelihood
-        max_logp = tt.max(logp, axis=1)
-        marg_logp = max_logp + pm.math.log(pm.math.sum(pm.math.exp(logp - max_logp[:, None]), axis=1))
-        pm.Potential('marg_logp', marg_logp)
+            # # Compute the marginalized likelihood
+            # max_logp = tt.max(logp, axis=1)
+            # marg_logp = max_logp + pm.math.log(pm.math.sum(pm.math.exp(logp - max_logp[:, None]), axis=1))
+            # pm.Potential('marg_logp', marg_logp)
+            dd = pm.DensityDist("dd",ddf.logp_dust(mu,log_width),observed=batch_dep,total_size=n_samp.shape)
+            # dd = pm.DensityDist("dd",ddf.logp_dust(mu,log_width),observed=batch_dep)
+            print("Doing dd")
+        else: 
+            # The line has some width: we're calling it a Gaussian in n
+            logp = -0.5 * (batch_dep - mu) ** 2 * pm.math.exp(-2*log_width) - log_width
 
+            # Compute the marginalized likelihood
+            max_logp = tt.max(logp, axis=1)
+            marg_logp = max_logp + pm.math.log(pm.math.sum(pm.math.exp(logp - max_logp[:, None]), axis=1))
+            pm.Potential('marg_logp', marg_logp)
+            # dd = pm.DensityDist("dd",ddf.logp_dust(mu,log_width),observed=batch_dep)
+        # breakpoint()
         #Perform the sampling!
-        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=False)
-
+        if not var_inf: trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=False)
+        else: 
+            mean_field = pm.fit(numtrials,method='fullrank_advi')
+            # mean_field = pm.fit(500,method="svgd",inf_kwargs=dict(n_particles=1000),obj_optimizer=pm.sgd(learning_rate=0.01))
+            trace = mean_field.sample(4000)
+        # breakpoint()
         # Use the arviz module to take a look at the results
         if plot:
             az.plot_trace(trace)
@@ -267,7 +310,7 @@ def polyNDgen(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extratext
     
     return trace, a_poly_T, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp
 
-def polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,plot=False,extratext='',degree=2,sampling=1000,tune=1000,dep_lim=np.array([-1.0,0.4]),uniform=True):
+def polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,plot=False,extratext='',degree=2,sampling=1000,tune=1000,dep_lim=np.array([-1.0,0.4]),uniform=True,var_inf=False):
     ''' Simulation of data where the dust index n is a 2-D polynomial function of stellar mass and sSFR.
 
     Parameters
@@ -307,9 +350,9 @@ def polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,plot=False,extratext=
     ndim = len(indep_samp)
     limlist = []
     for indep in indep_samp:
-        # per = np.percentile(indep,[0.5,99.5])
-        limlist.append(np.array([np.amin(indep),np.amax(indep)]))
-        # limlist.append(per)
+        per = np.percentile(indep,[1.0,99.0])
+        # limlist.append(np.array([np.amin(indep),np.amax(indep)]))
+        limlist.append(per)
     # dep_per = np.percentile(dep_samp,[0.5,99.5])
     lower, upper = min(dep_lim[0],np.amin(dep_samp)), max(dep_lim[1],np.amax(dep_samp)) # Limits for dependent variable
     x = np.empty((0,degree+1)) # To set up grid on which true dust parameter n will be defined
@@ -343,7 +386,11 @@ def polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,plot=False,extratext=
         pm.Potential('marg_logp', marg_logp)
 
         #Perform the sampling!
-        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=True)
+        if not var_inf: trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=True)
+        else:
+            mean_field = pm.fit(10000,method='fullrank_advi')
+            trace_0 = mean_field.sample(4000)
+            trace = az.from_pymc3(trace_0)
 
         # Use the arviz module to take a look at the results
         if plot:
@@ -353,16 +400,17 @@ def polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,plot=False,extratext=
 
     return trace, a_poly_T, xx
 
-def plot1D(x,y,xx,yy,img_dir,name,xlab=r'$\log\ M_*$',ylab='Median model n',xerr=None,yerr=None):
+def plot1D(x,y,xx,yy,img_dir,name,xlab=r'$\log\ M_*$',ylab='Median model n',xerr=None,yerr=None,ngrid_err=None):
     fig, ax = plt.subplots()
     indsort = np.argsort(x)
     ax.plot(x[indsort],y[indsort],'b-.',markersize=1)
     ax.plot(xx,yy,'r^',markersize=2)
-    # ax.errorbar(x,y,yerr=yerr,xerr=xerr,fmt='none',ecolor='b',alpha=np.sqrt(1.0/len(x)),markersize=1)
+    if xerr is not None or yerr is not None: ax.errorbar(x,y,yerr=yerr,xerr=xerr,fmt='none',ecolor='b',alpha=np.sqrt(1.0/len(x)))
+    if ngrid_err is not None: ax.errorbar(xx,yy,yerr=ngrid_err,fmt='none',ecolor='r',alpha=1.0)
     ax.set_xlabel(xlab); ax.set_ylabel(ylab)
     fig.savefig(op.join(img_dir,'%s.png'%(name)),bbox_inches='tight',dpi=200)
 
-def plot_color_map(x,y,z,xdiv,ydiv,znum,xx,yy,img_dir,name,levels=10,xlab=r'$\log\ M_*$',ylab=r'$\log$ sSFR$_{\rm{100}}$',zlab='Median model n',cmap='viridis',xtrue=None,ytrue=None):
+def plot_color_map(x,y,z,xdiv,ydiv,znum,xx,yy,img_dir,name,levels=10,xlab=r'$\log\ M_*$',ylab=r'$\log$ sSFR$_{\rm{100}}$',zlab='Median model n',cmap='viridis',xtrue=None,ytrue=None,xtrueerr=None,ytrueerr=None,minz=-100.0,maxz=100.0):
     """ Plot color map of z(x,y) and over-plot contours showing the number of sources 
     
     Parameters:
@@ -384,12 +432,23 @@ def plot_color_map(x,y,z,xdiv,ydiv,znum,xx,yy,img_dir,name,levels=10,xlab=r'$\lo
     """
     fig, ax = plt.subplots()
     ax.plot(xx,yy,'ro',markersize=6)
-    if cmap=='viridis': cf = ax.contourf(x,y,z,levels=levels,cmap=cmap)
+    if cmap=='viridis': cf = ax.contourf(x,y,z,levels=levels,cmap=cmap,vmin=max(np.amin(z),minz),vmax=min(np.amax(z),maxz))
     else: cf = ax.contourf(x,y,z,levels=levels,cmap=cmap,vmin=-1.0*np.amax(abs(z)),vmax=np.amax(abs(z)))
+    xmin, xmax = np.amin(xx),np.amax(xx)
+    ymin, ymax = np.amin(yy),np.amax(yy)
     if np.sum(znum)>2501:
         cnum = ax.contour(xdiv,ydiv,znum,levels=4,cmap='Greys')
+        if xtrueerr is not None:
+            if type(xtrueerr) is float: xe = [xtrueerr]
+            else: xe = [np.mean(xtrueerr)]
+            if type(ytrueerr) is float: ye = [ytrueerr]
+            else: ye = [np.mean(ytrueerr)]
+            plt.errorbar([xmin+0.15*(xmax-xmin)],[ymax-0.15*(ymax-ymin)],yerr=ye,xerr=xe,fmt='none',ecolor='k',elinewidth=1.5,capsize=2)
     else:
-        if xtrue is not None: plt.plot(xtrue,ytrue,'k.',markersize=1,alpha=0.3)
+        if xtrue is not None: 
+            plt.plot(xtrue,ytrue,'k.',markersize=1,alpha=0.3)
+        if xtrueerr is not None:
+            plt.errorbar(xtrue,ytrue,yerr=ytrueerr,xerr=xtrueerr,fmt='none',ecolor='k',alpha=10.0/np.sum(znum))
     ax.set_xlabel(xlab)
     ax.set_ylabel(ylab)
     ax.set_xlim(np.amin(xx),np.amax(xx))
@@ -504,7 +563,7 @@ def plot_percentile(n_sim,n_true,img_dir,name,testper=29,endper=97.5):
     plt.ylabel('Fraction of true encapsulated')
     plt.savefig(op.join(img_dir,'%s.png'%(name)),bbox_inches='tight',dpi=200)
 
-def get_relevant_info_ND_Gen(trace,a_poly_T2,xx_true,xx,ngrid_true,coefs_true,n_true,width_true,indep_true,indep_true2,indep_samp,indep_samp2,n_samp,med_arr_true,med_arr,indep_name_true,indep_name,indep_lab,dep_name='n',dep_lab='n',degree=2,degree2=1,numsamp=50,levels=10,extratext='',fine_grid=201,bins=20,img_dir_orig=op.join('DataSim','2DTests'),grid_name='ngrid',width_name='log_width'):
+def get_relevant_info_ND_Gen(trace,a_poly_T2,xx_true,xx,ngrid_true,coefs_true,n_true,width_true,indep_true,indep_true2,indep_samp,indep_samp2,n_samp,med_arr_true,med_arr,indep_name_true,indep_name,indep_lab,dep_name='n',dep_lab='n',degree=2,degree2=1,numsamp=50,levels=10,extratext='',fine_grid=201,bins=20,img_dir_orig=op.join('DataSim','2DTests'),grid_name='ngrid',width_name='log_width',var_inf=False):
     nlen = len(n_true)
     ndim, ndim2 = len(indep_true), len(indep_true2)
     img_dir = op.join(img_dir_orig,'deg_%d_deg2_%d'%(degree,degree2),extratext)
@@ -512,6 +571,7 @@ def get_relevant_info_ND_Gen(trace,a_poly_T2,xx_true,xx,ngrid_true,coefs_true,n_
     # Determine median model values for the dependent variable
     ngrid_med = np.median(getattr(trace,grid_name),axis=0)
     width_med = np.exp(np.median(getattr(trace,width_name)))
+    width_mean = np.exp(np.mean(getattr(trace,width_name)))
     all_std = np.std(getattr(trace,grid_name),axis=0)
     coefs_med = np.linalg.lstsq(a_poly_T2,ngrid_med,None)[0]
     n_med = calc_poly(indep_true2,coefs_med,degree2) + width_med * np.random.randn(nlen)
@@ -529,32 +589,48 @@ def get_relevant_info_ND_Gen(trace,a_poly_T2,xx_true,xx,ngrid_true,coefs_true,n_
 
     print("Likelihood of true solution: %.4f"%(np.sum(marg_logp)))
     print("Likelihood of median NUTS solution: %.4f"%(np.sum(marg_logp_med)))
-    print("Likelihood of best NUTS solution: %.4f"%(np.max(trace.model_logp)))
+    if not var_inf: print("Likelihood of best NUTS solution: %.4f"%(np.max(trace.model_logp)))
 
     # Evaluate the error/residuals at the input (data) points
-    inds = np.random.choice(len(trace.model_logp),size=numsamp,replace=True)
-    n_sim = np.zeros((numsamp,nlen))
+    inds = np.random.choice(len(trace.log_width),size=numsamp,replace=False)
+    coefs_mod_all = np.empty((numsamp,coefs_med.size))
+    width_mod_all = np.empty(numsamp)
+    n_sim = np.empty((numsamp,nlen))
     for i, ind in enumerate(inds):
         ngrid_mod = getattr(trace,grid_name)[ind]
         width_mod = np.exp(getattr(trace,width_name)[ind])
         coefs_mod = polyfitnd(xx,ngrid_mod)
+        coefs_mod_all[i] = coefs_mod
+        width_mod_all[i] = width_mod
         n_sim[i] = calc_poly(indep_true2,coefs_mod,degree2) + width_mod * np.random.randn(*n_sim[i].shape)
-    # n_err = np.std(n_sim,axis=0)
-    # n_quad_err = np.sqrt(n_err**2+width_true**2)
-    n_quad_err = np.sqrt(width_med**2+width_true**2)
+    n_mean, n_err = np.mean(n_sim,axis=0), np.std(n_sim,axis=0)
+    n_quad_err = np.sqrt(n_err**2+width_true**2)
+    # n_quad_err = np.sqrt(width_med**2+width_true**2)
     resid_norm = (n_med-n_true)/n_quad_err
 
     # Next plot compares model to the truth very simply
     if degree2==degree and indep_name_true==indep_name: ngrid_true_plot = True
     else: ngrid_true_plot = False
-    plot_model_true(n_true,n_med,ngrid_true,ngrid_med,img_dir,'PolyND_%s%s'%(dep_name,extratext),n_err=width_med,width_true=width_true,all_std=all_std,ylab='Median model %s'%(dep_lab),xlab='True %s'%(dep_lab),ngrid_true_plot=ngrid_true_plot)
+    plot_model_true(n_true,n_mean,ngrid_true,ngrid_med,img_dir,'PolyND_%s%s_vi%d'%(dep_name,extratext,var_inf),n_err=n_err,width_true=width_true,all_std=all_std,ylab='Mean posterior model %s'%(dep_lab),xlab='True %s'%(dep_lab),ngrid_true_plot=ngrid_true_plot)
 
     # Histogram of residuals/error and fit a normal distribution to them--ideal result is standard normal
-    plot_hist_resid(resid_norm,img_dir,'hist_resid_sample_'+dep_name+extratext)
+    plot_hist_resid(resid_norm,img_dir,'hist_resid_sample_'+dep_name+extratext+'_vi%d'%(var_inf))
 
     # Plot general percentile comparison
-    plot_percentile(n_sim,n_true,img_dir,'percentile_'+dep_name+extratext)
+    plot_percentile(n_sim,n_true,img_dir,'percentile_'+dep_name+extratext+'_vi%d'%(var_inf))
 
+    if ndim2==1:
+        x = np.linspace(min(indep_true2[0]),max(indep_true2[0]),fine_grid)
+        # y = calc_poly(x[None,:],coefs_med,degree2)
+        n_sim2 = np.zeros((numsamp,fine_grid))
+        for i, ind in enumerate(inds):
+            n_sim2[i] = calc_poly(x[None,:],coefs_mod_all[i],degree2) # + width_mod * np.random.randn(*n_sim2[i].shape)
+        plot1D(x,np.mean(n_sim2,axis=0),xx[0].ravel(),ngrid_med,img_dir,'Sim_Model_%s_%s_%s_vi%d'%(indep_name[0],dep_name,extratext,var_inf),xlab=indep_lab[0],ylab='Mean posterior model '+dep_lab,xerr=None,yerr=np.std(n_sim2,axis=0),ngrid_err=all_std)
+    if ndim==1: 
+        x = np.linspace(min(indep_true[0]),max(indep_true[0]),fine_grid)
+        y = calc_poly(x[None,:],coefs_true,degree)
+        plot1D(x,y,xx_true[0].ravel(),ngrid_true,img_dir,'Sim_True_%s_%s_%s_vi%d'%(indep_name_true[0],dep_name,extratext,var_inf),xlab=indep_lab[0],ylab='True '+dep_lab)
+        
     if ndim<2 or ndim2<2: return
 
     # 2-D (or 2+D-dependent) plots! First three are color maps of the model results for the dependent variable as a function of the independent variables and of the residuals (with and without division of the error)
@@ -576,7 +652,7 @@ def get_relevant_info_ND_Gen(trace,a_poly_T2,xx_true,xx,ngrid_true,coefs_true,n_
                 indep_fine[k] = np.linspace(min(indep_true2[k]),max(indep_true2[k]),fine_grid)
                 indep_fine_true[l] = indep_fine[k]
                 indep_div[index] = np.linspace(min(indep_true2[k]),max(indep_true2[k])+1.0e-8,bins+1)
-                indep_avg[index] = np.linspace((indep_div[k][0]+indep_div[k][1])/2.0,(indep_div[k][-1]+indep_div[k][-2])/2.0,bins)
+                indep_avg[index] = np.linspace((indep_div[index][0]+indep_div[index][1])/2.0,(indep_div[index][-1]+indep_div[index][-2])/2.0,bins)
                 index+=1
 
             xx_fine = np.meshgrid(*indep_fine[(i,j),:])
@@ -614,23 +690,35 @@ def get_relevant_info_ND_Gen(trace,a_poly_T2,xx_true,xx,ngrid_true,coefs_true,n_
                     cond = np.logical_and(condi,condj)
                     znum[l,k] = len(n_true[cond])
 
-            plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],n_med_fine,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx[i].ravel()+med_arr[i],xx[j].ravel()+med_arr[j],img_dir,'Medianv2_%s_%s_%s'%(dep_name,indep_name[i],indep_name[j])+extratext,levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='Median model %s'%(dep_lab),xtrue=indep_true2[i]+med_arr[i],ytrue=indep_true2[j]+med_arr[j])
+            n_sim2 = np.zeros((numsamp,fine_grid,fine_grid))
+            for ii, ind in enumerate(inds):
+                n_sim2[ii] = calc_poly(xx_fine,coefs_mod_all[ii],degree2) # + width_mod * np.random.randn(*n_sim2[ii].shape)
+            mmod, stdmod = np.mean(n_sim2,axis=0), np.std(n_sim2,axis=0)
 
-            plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],n_true_fine,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx_true[indtruei].ravel()+med_arr_true[indtruei],xx_true[indtruej].ravel()+med_arr_true[indtruej],img_dir,'True_%s_%s_%s'%(dep_name,indep_name[i],indep_name[j])+extratext,levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='True %s'%(dep_lab),xtrue=indep_true[indtruei]+med_arr_true[indtruei],ytrue=indep_true[indtruej]+med_arr_true[indtruej])
+            plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],mmod,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx[i].ravel()+med_arr[i],xx[j].ravel()+med_arr[j],img_dir,'MeanPost_%s_%s_%s'%(dep_name,indep_name[i],indep_name[j])+extratext,levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='Mean posterior model %s'%(dep_lab),xtrue=indep_true2[i]+med_arr[i],ytrue=indep_true2[j]+med_arr[j],xtrueerr=np.std(indep_samp2[i],axis=1),ytrueerr=np.std(indep_samp2[j],axis=1))
 
-            plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],n_med_fine-n_true_fine,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx[i].ravel()+med_arr[i],xx[j].ravel()+med_arr[j],img_dir,'Residv2_%s_%s_%s'%(dep_name,indep_name[i],indep_name[j])+extratext,levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],cmap='bwr',zlab=r'$%s_{\rm model}-%s_{\rm true}$'%(dep_name,dep_name),xtrue=indep_true2[i]+med_arr[i],ytrue=indep_true2[j]+med_arr[j])
+            plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],n_true_fine,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx_true[indtruei].ravel()+med_arr_true[indtruei],xx_true[indtruej].ravel()+med_arr_true[indtruej],img_dir,'True_%s_%s_%s'%(dep_name,indep_name[i],indep_name[j])+extratext,levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='True %s'%(dep_lab),xtrue=indep_true[indtruei]+med_arr_true[indtruei],ytrue=indep_true[indtruej]+med_arr_true[indtruej],xtrueerr=np.std(indep_samp[indtruei],axis=1),ytrueerr=np.std(indep_samp[indtruej],axis=1))
 
-def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep_name,indep_lab,dep_name='n',dep_lab='n',degree2=1,numsamp=50,levels=10,extratext='',fine_grid=201,bins=20,img_dir_orig=op.join('DataSim','2DTests'),grid_name='ngrid',width_name='log_width'):
+            plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],mmod-n_true_fine,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx[i].ravel()+med_arr[i],xx[j].ravel()+med_arr[j],img_dir,'Residv2_%s_%s_%s'%(dep_name,indep_name[i],indep_name[j])+extratext,levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],cmap='bwr',zlab=r'$%s_{\rm model}-%s_{\rm true}$'%(dep_name,dep_name),xtrue=indep_true2[i]+med_arr[i],ytrue=indep_true2[j]+med_arr[j],xtrueerr=np.std(indep_samp2[i],axis=1),ytrueerr=np.std(indep_samp2[j],axis=1))
+
+            plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],stdmod/width_mean,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx[i].ravel()+med_arr[i],xx[j].ravel()+med_arr[j],img_dir,'ModErr_%s_%s_%s'%(dep_name,indep_name[i],indep_name[j])+extratext,levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='Model %s uncertainty / intrinsic width'%(dep_lab),xtrue=indep_true2[i]+med_arr[i],ytrue=indep_true2[j]+med_arr[j],xtrueerr=np.std(indep_samp2[i],axis=1),ytrueerr=np.std(indep_samp2[j],axis=1))
+
+def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep_name,indep_lab,dep_name='n',dep_lab='n',degree2=1,levels=10,extratext='',fine_grid=201,bins=20,img_dir_orig=op.join('DataTrue','NewTests'),grid_name='ngrid',width_name='log_width',var_inf=False,numsamp=50):
     nlen, nwid = len(n_samp), len(n_samp[0])
     ndim2 = len(indep_samp)
     img_dir = op.join(img_dir_orig,'deg_%d'%(degree2),extratext)
 
     # Determine median model values for the dependent variable
-    ngrid_med = np.median(getattr(trace,grid_name),axis=0)
-    width_med = np.exp(np.median(getattr(trace,width_name)))
-    all_std = np.std(getattr(trace,grid_name),axis=0)
+    ngrid_0, log_width_0 = np.array(getattr(trace.posterior,grid_name)), np.array(getattr(trace.posterior,width_name))
+    sh = ngrid_0.shape
+    ngrid, log_width = ngrid_0.reshape(sh[0]*sh[1],sh[2]), log_width_0.reshape(sh[0]*sh[1])
+    ngrid_med = np.median(ngrid,axis=0)
+    width_med = np.exp(np.median(log_width))
+    width_mean = np.exp(np.mean(log_width))
+    all_std = np.std(ngrid,axis=0)
     coefs_med = np.linalg.lstsq(a_poly_T2,ngrid_med,None)[0]
     n_med = calc_poly(indep_samp,coefs_med,degree2) + width_med * np.random.randn(nlen,nwid)
+    indep_avg = np.mean(indep_samp,axis=2)
 
     dataarr = np.empty((ngrid_med.size,0))
     for i in range(len(xx)):
@@ -638,15 +726,34 @@ def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep
     dataarr = np.append(dataarr,ngrid_med[:,None],axis=1)
     dataname = ''
     for name in indep_name: dataname += name+'_'
-    np.savetxt(op.join(img_dir,'ngrid_%s%s_%s.dat'%(dataname,dep_name,extratext)),dataarr,header='%s  ngrid'%('  '.join(indep_name)),fmt='%.5f')
-    trace.to_netcdf(op.join(img_dir,'trace_%s%s_%s.nc'%(dataname,dep_name,extratext)))
+    np.savetxt(op.join(img_dir,'ngrid_%s%s_%s_vi%d.dat'%(dataname,dep_name,extratext,var_inf)),dataarr,header='%s  ngrid'%('  '.join(indep_name)),fmt='%.5f')
+    trace.to_netcdf(op.join(img_dir,'trace_%s%s_%s_vi%d.nc'%(dataname,dep_name,extratext,var_inf)))
+    # pm.save_trace(trace,directory=img_dir)
 
-    plot_model_true(np.median(n_samp,axis=1),np.median(n_med,axis=1),None,None,img_dir,'Real_n_comp_%s'%(extratext),n_err=np.std(n_med,axis=1),width_true=np.std(n_samp,axis=1),ylab='Median model n (median)', xlab='Observed n (posterior medians)',ngrid_true_plot=False)
+    inds = np.random.choice(len(log_width),size=numsamp,replace=False)
+    ngrid_mod_all, width_mod_all = np.empty((numsamp,coefs_med.size)), np.empty(numsamp)
+    coefs_mod_all = np.empty((numsamp,coefs_med.size))
+    n_sim = np.empty((numsamp,nlen))
+    for i, ind in enumerate(inds):
+        ngrid_mod = ngrid[ind]
+        width_mod = np.exp(log_width[ind])
+        coefs_mod = polyfitnd(xx,ngrid_mod)
+        ngrid_mod_all[i] = ngrid_mod
+        width_mod_all[i] = width_mod
+        coefs_mod_all[i] = coefs_mod
+        n_sim[i] = calc_poly(indep_avg,coefs_mod,degree2) + width_mod * np.random.randn(*n_sim[i].shape)
+    n_mean, n_err = np.mean(n_sim,axis=0), np.std(n_sim,axis=0)
+
+    plot_model_true(np.mean(n_samp,axis=1),n_mean,None,None,img_dir,'Real_n_comp_%s_vi%d'%(extratext,var_inf),n_err=n_err,width_true=np.std(n_samp,axis=1),ylab='Mean posterior model %s (at mean location)'%(dep_lab), xlab='Observed %s (Prospector posterior means)'%(dep_lab),ngrid_true_plot=False)
 
     if ndim2==1:
-        # x = np.median(indep_samp[0],axis=1)
-        y = calc_poly(indep_samp,coefs_med,degree2)
-        plot1D(indep_samp[0].ravel()+med_arr[0],y.ravel(),xx[0].ravel()+med_arr[0],ngrid_med,img_dir,'Real_Model_%s_%s_%s'%(indep_name[0],dep_name,extratext),xlab=indep_lab[0],ylab='Median model '+dep_lab,xerr=np.std(indep_samp[0],axis=1),yerr=np.std(n_samp,axis=1))
+        x = np.linspace(np.amin(xx[0]),np.amax(xx[0]),fine_grid)
+        # y = calc_poly(indep_samp,coefs_med,degree2)
+        n_sim2 = np.empty((numsamp,fine_grid))
+        for i, ind in enumerate(inds):
+            n_sim2[i] = calc_poly(x[None,:],coefs_mod_all[i],degree2) # + width_mod_all[i] * np.random.randn(*n_sim2[i].shape)
+        n_mean2, n_err2 = np.mean(n_sim2,axis=0), np.std(n_sim2,axis=0)
+        plot1D(x+med_arr[0],n_mean2,xx[0].ravel()+med_arr[0],np.mean(ngrid_mod_all,axis=0),img_dir,'Real_Model_%s_%s_%s_vi%d'%(indep_name[0],dep_name,extratext,var_inf),xlab=indep_lab[0],ylab='Mean posterior model '+dep_lab,yerr=n_err2)
         return
     
     med_mod = np.median(indep_samp,axis=(1,2))
@@ -660,9 +767,9 @@ def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep
             # Define grids of the independent variables: a fine one (xx_fine) and a coarse one (xx_div)
             index = 0
             for k in [i,j]:
-                indep_fine[k] = np.linspace(np.amin(indep_samp[k]),np.amax(indep_samp[k]),fine_grid)
-                indep_div[index] = np.linspace(np.amin(indep_samp[k]),np.amax(indep_samp[k])+1.0e-8,bins+1)
-                indep_avg[index] = np.linspace((indep_div[k][0]+indep_div[k][1])/2.0,(indep_div[k][-1]+indep_div[k][-2])/2.0,bins)
+                indep_fine[k] = np.linspace(np.amin(xx[k]),np.amax(xx[k]),fine_grid)
+                indep_div[index] = np.linspace(np.amin(xx[k]),np.amax(xx[k])+1.0e-8,bins+1)
+                indep_avg[index] = np.linspace((indep_div[index][0]+indep_div[index][1])/2.0,(indep_div[index][-1]+indep_div[index][-2])/2.0,bins)
                 index+=1
 
             xx_fine = np.meshgrid(*indep_fine[(i,j),:])
@@ -688,8 +795,14 @@ def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep
                     cond = np.logical_and(condi,condj)
                     znum[l,k] = len(n_samp[cond])
             znum/=nwid # We added over samples: divide it to make a true galaxy sample
+            n_sim2 = np.empty((numsamp,fine_grid,fine_grid))
+            for ii, ind in enumerate(inds):
+                n_sim2[ii] = calc_poly(xx_fine,coefs_mod_all[ii],degree2) # + width_mod_all[ii] * np.random.randn(*n_sim2[ii].shape)
+            n_mean2, n_err2 = np.mean(n_sim2,axis=0), np.std(n_sim2,axis=0)
 
-            plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],n_med_fine,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx[i].ravel()+med_arr[i],xx[j].ravel()+med_arr[j],img_dir,'MedianModel_%s_%s_%s'%(dep_name,indep_name[i],indep_name[j])+extratext,levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='Median model %s'%(dep_lab),xtrue=np.median(indep_samp[i],axis=1)+med_arr[i],ytrue=np.median(indep_samp[j],axis=1)+med_arr[j])
+            plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],n_mean2,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx[i].ravel()+med_arr[i],xx[j].ravel()+med_arr[j],img_dir,'MeanModel_%s_%s_%s%s_vi%d'%(dep_name,indep_name[i],indep_name[j],extratext,var_inf),levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='Mean posterior model %s'%(dep_lab),xtrue=np.mean(indep_samp[i],axis=1)+med_arr[i],ytrue=np.mean(indep_samp[j],axis=1)+med_arr[j],xtrueerr=np.std(indep_samp[i],axis=1),ytrueerr=np.std(indep_samp[j],axis=1))
+
+            plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],n_err2/width_mean,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx[i].ravel()+med_arr[i],xx[j].ravel()+med_arr[j],img_dir,'ErrModel_%s_%s_%s%s_vi%d'%(dep_name,indep_name[i],indep_name[j],extratext,var_inf),levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='Model %s uncertainty / intrinsic width'%(dep_lab),xtrue=np.mean(indep_samp[i],axis=1)+med_arr[i],ytrue=np.mean(indep_samp[j],axis=1)+med_arr[j],xtrueerr=np.std(indep_samp[i],axis=1),ytrueerr=np.std(indep_samp[j],axis=1))
 
 def create_prior(proplist,samplearr,zarr):
     proparr = ['ssfr', 'mwa', 'stmass', 'dust1', 'dust2', 'met']
@@ -831,6 +944,35 @@ def getKDE(proplist,samplearr,zarr):
     print("Finished KDE module")
     return priordiff
 
+def getKDEsimple(proplist,samplearr,proplab=None,extratext='allz'):
+    print("Starting KDE Module")
+    fn = 'Prior/samples_allz.pickle'
+    with (open(fn,'rb')) as openfile:
+        obj = pickle.load(openfile)
+    ssfr = np.array(obj['ssfr'])
+    cond = ssfr>=ssfr_lim_prior
+    data = np.empty((len(ssfr[cond]),len(proplist)))
+    for i,prop in enumerate(proplist):
+        data[:,i] = np.array(obj[prop])[cond]
+    print("About to run KDE code on data, with shape",data.shape)
+    # kde = KDEApproach(data)
+    kde = KernelDensity(bandwidth=0.2*len(proplist)-0.1,algorithm='auto', kernel='epanechnikov', metric='euclidean', atol=1.0e-5, rtol=1.0e-5, breadth_first=True, leaf_size=40)
+    kde.fit(data)
+    print("Finished running KDE code")
+    if len(samplearr)==1: plotPrior1D(data[:,0],kde,proplist[0],proplab[0],extratext=extratext)
+    elif len(samplearr)==2: plotPrior2D(data,kde,proplist,proplab,extratext=extratext)
+    else: pass
+
+    arr_score = np.transpose(samplearr,axes=(1,2,0)).reshape(samplearr.shape[1]*samplearr.shape[2],samplearr.shape[0])
+    arr_split = np.array_split(arr_score,cores,axis=0)
+
+    with Pool(processes=cores) as pool:
+        results = pool.starmap(scoring,product(arr_split,[kde]))
+
+    priordiff = np.concatenate(results).reshape(samplearr[0].shape)
+    print("Finished KDE module")
+    return priordiff
+
 def getKDEPrior(proplist,proplab):
     zlist = np.linspace(0.5,3.0,6)
     for j, zred in enumerate(zlist):
@@ -849,6 +991,7 @@ def getKDEPrior(proplist,proplab):
         print("Finished running KDE code")
         if len(proplist)==1: plotPrior1D(data[:,0],kde,proplist[0],proplab[0],extratext='z%.2f'%(zred))
         elif len(proplist)==2: plotPrior2D(data,kde,proplist,proplab,extratext='z%.2f'%(zred))
+        else: pass
 
 def plotPrior1D(samplearr,kde,propname,proplab,extratext='',gridding=1001):
     mkpath('Prior/KDE/%s'%(propname))
@@ -893,9 +1036,9 @@ def make_prop_dict():
     prop_dict['max'] = {'logM': 1.907, 'ssfr': 1.393, 'logZ': 0.446, 'z': 1.894, 'i': 1.0, 'd1': 4.8, 'd2': 4.0}
     return prop_dict, dep_dict
 
-def data_simulation(args):
+def data_simulation(args,prop_dict):
     if args.data:
-        with (open("3dhst_resample_50_inc.pickle",'rb')) as openfile:
+        with (open("3dhst_resample_50_inc_v2.pickle",'rb')) as openfile:
             obj = pickle.load(openfile)
         logM, ssfr = np.log10(obj['stellar_mass']), np.log10(obj['ssfr_100'])
         logZ = obj['log_z_zsun']
@@ -957,9 +1100,10 @@ def data_simulation(args):
     return indep_true, med, n, limlist, indep_true2, med_mod, limlist2
 
 def data_true(args):
-    with (open("3dhst_resample_50_inc.pickle",'rb')) as openfile:
+    with (open("3dhst_resample_10_inc.pickle",'rb')) as openfile:
         obj = pickle.load(openfile)
     logM, ssfr = np.log10(obj['stellar_mass']), np.log10(obj['ssfr_100'])
+    samples = len(logM[0])
     logZ = obj['log_z_zsun']
     logMavg = np.average(logM,axis=1); logssfravg = np.average(ssfr,axis=1); logZavg = np.average(logZ,axis=1)
     z = obj['z']
@@ -967,10 +1111,11 @@ def data_true(args):
     tau1 = obj['dust1']
     tau2 = obj['dust2']
     inc = obj['inc']
-    comb = np.array([ssfr,logZ])
-    per = np.percentile(comb,[1.0,99.0],axis=(1,2))
+    # comb = np.array([ssfr,logZ])
+    per = np.percentile(ssfr,[1.0,99.0])
     masscomp = mass_completeness(z)
-    cond = np.logical_and.reduce((logMavg>=masscomp,z<3.0,np.amin(ssfr,axis=1)>ssfr_lims_data[0],np.amax(ssfr,axis=1)<ssfr_lims_data[1],logssfravg>per[0][0],logssfravg<per[1][0],logZavg>per[1][0],logZavg<per[1][1]))
+    # cond = np.logical_and.reduce((logMavg>=masscomp,z<3.0,np.amin(ssfr,axis=1)>ssfr_lims_data[0],np.amax(ssfr,axis=1)<ssfr_lims_data[1],logssfravg>per[0][0],logssfravg<per[1][0],logZavg>per[1][0],logZavg<per[1][1]))
+    cond = np.logical_and.reduce((logMavg>=masscomp,logssfravg>per[0]))
     
     if args.i_mod: cond = np.logical_and.reduce((cond,np.median(inc,axis=1)>=0.0,np.median(inc,axis=1)<=1.0))
 
@@ -1005,7 +1150,7 @@ def data_true(args):
         prior_lab.append(r'$\log (Z/Z_\odot)$')
     if args.z_mod: 
         md = np.median(z[indfin])
-        zrep = np.repeat(z[indfin][:,None],args.samples,axis=1)
+        zrep = np.repeat(z[indfin][:,None],samples,axis=1)
         indep_samp = np.append(indep_samp,zrep[None,:,:]-md,axis=0)
         med_mod = np.append(med_mod,md)
     if args.i_mod:
@@ -1076,23 +1221,24 @@ def main(args=None):
             # logp_prior_orig = create_prior(prior_prop,prior_samp,zarr)
             # print("Finished creating original 1-D/2-D prior combination")
             # getKDEPrior(prior_prop,prior_lab)
-            logp_prior = getKDE(prior_prop,prior_samp,zarr)
+            # logp_prior = getKDE(prior_prop,prior_samp,zarr)
+            logp_prior = getKDEsimple(prior_prop,prior_samp,proplab=prior_lab)
             print("Finished all KDE Calculations")
             print("Nans in logp_prior:",np.isnan(logp_prior).any())
         else: logp_prior = 0.0
         # print(logp_prior_orig-np.amin(logp_prior_orig),logp_prior-np.amin(logp_prior))
+        breakpoint()
+        trace, a_poly_T, xx = polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,dep_lim=nlim,tune=args.tune,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,uniform=uniform,var_inf=args.var_inf)
 
-        trace, a_poly_T, xx = polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,dep_lim=nlim,tune=args.tune,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,uniform=uniform)
-
-        get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp,med_mod,indep_name2,indep_lab2,dep_name,dep_lab,degree2=args.degree2,numsamp=args.samples,extratext=args.extratext,img_dir_orig=img_dir_orig)
+        get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp,med_mod,indep_name2,indep_lab2,dep_name,dep_lab,degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,var_inf=args.var_inf)
 
     else: 
         img_dir_orig = op.join('DataSim',args.dir_orig)
-        indep_true, med, n, limlist, indep_true2, med_mod, limlist2 = data_simulation(args)
+        indep_true, med, n, limlist, indep_true2, med_mod, limlist2 = data_simulation(args,prop_dict)
 
-        trace, a_poly_T, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp = polyNDgen(img_dir_orig, limlist=limlist, nlim=nlim, size=args.size,samples=args.samples,tune=args.tune,errmult=args.error_mult,errmultn=args.error_mult_n,plot=args.plot,extratext=args.extratext,degree=args.degree,sampling=args.steps,sigarr=sigarr,sigN=sigN,indep_true=indep_true,n=n,degree2=args.degree2,limlist2=limlist2,indep_true2=indep_true2,sigarr2=sigarr2,indep_name=indep_name,indep_name2=indep_name2)
+        trace, a_poly_T, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp = polyNDgen(img_dir_orig, limlist=limlist, nlim=nlim, size=args.size,samples=args.samples,tune=args.tune,errmult=args.error_mult,errmultn=args.error_mult_n,plot=args.plot,extratext=args.extratext,degree=args.degree,sampling=args.steps,sigarr=sigarr,sigN=sigN,indep_true=indep_true,n=n,degree2=args.degree2,limlist2=limlist2,indep_true2=indep_true2,sigarr2=sigarr2,indep_name=indep_name,indep_name2=indep_name2,var_inf=args.var_inf,numtrials=20000,minibatch_size=200)
 
-        get_relevant_info_ND_Gen(trace, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp, med, med_mod, indep_name, indep_name2, indep_lab2, dep_name=dep_name, dep_lab=dep_lab, degree=args.degree,degree2=args.degree2,extratext=args.extratext,numsamp=500,img_dir_orig=img_dir_orig)
+        get_relevant_info_ND_Gen(trace, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp, med, med_mod, indep_name, indep_name2, indep_lab2, dep_name=dep_name, dep_lab=dep_lab, degree=args.degree,degree2=args.degree2,extratext=args.extratext,numsamp=500,img_dir_orig=img_dir_orig,var_inf=args.var_inf)
 
 if __name__=='__main__':
     main()
