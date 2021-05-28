@@ -17,6 +17,7 @@ import os.path as op
 from anchor_points import get_a_polynd, calc_poly, calc_poly_tt, polyfitnd, calc_poly_tt_vi
 import argparse as ap
 from scipy.stats import norm, truncnorm
+from scipy.integrate import trapz
 from copy import copy, deepcopy
 from scipy.interpolate import LinearNDInterpolator
 from sklearn.neighbors import KernelDensity
@@ -923,7 +924,7 @@ def getKDE(proplist,samplearr,zarr):
             data[:,i] = np.array(obj[prop])[cond]
         print("About to run KDE code on data, with shape",data.shape)
         # kde = KDEApproach(data)
-        kde = KernelDensity(bandwidth=0.2*len(proplist)-0.1,algorithm='auto', kernel='epanechnikov', metric='euclidean', atol=1.0e-5, rtol=1.0e-5, breadth_first=True, leaf_size=40)
+        kde = KernelDensity(bandwidth=0.2*len(proplist)-0.1,algorithm='auto', kernel='gaussian', metric='euclidean', atol=1.0e-5, rtol=1.0e-5, breadth_first=True, leaf_size=40)
         kde.fit(data)
         print("Finished running KDE code")
 
@@ -940,11 +941,12 @@ def getKDE(proplist,samplearr,zarr):
     indarr = np.searchsorted(zlist,zarr)
     priordiff = np.zeros_like(samplearr[0])
     for i,ind in enumerate(indarr):
-        priordiff[i] = (zlist[ind]-zarr[i])*priordiffz[ind-1,i,:] + (zarr[i]-zlist[ind-1])*priordiffz[ind,i,:]
+        dz = zlist[ind]-zlist[ind-1]
+        priordiff[i] = (zlist[ind]-zarr[i])/dz*priordiffz[ind-1,i,:] + (zarr[i]-zlist[ind-1])/dz*priordiffz[ind,i,:]
     print("Finished KDE module")
     return priordiff
 
-def getKDEsimple(proplist,samplearr,proplab=None,extratext='allz'):
+def getKDEsimple(proplist,samplearr,proplab=None,extratext='allz_gauss'):
     print("Starting KDE Module")
     fn = 'Prior/samples_allz.pickle'
     with (open(fn,'rb')) as openfile:
@@ -956,12 +958,12 @@ def getKDEsimple(proplist,samplearr,proplab=None,extratext='allz'):
         data[:,i] = np.array(obj[prop])[cond]
     print("About to run KDE code on data, with shape",data.shape)
     # kde = KDEApproach(data)
-    kde = KernelDensity(bandwidth=0.2*len(proplist)-0.1,algorithm='auto', kernel='epanechnikov', metric='euclidean', atol=1.0e-5, rtol=1.0e-5, breadth_first=True, leaf_size=40)
+    kde = KernelDensity(bandwidth=0.2*len(proplist)-0.1,algorithm='auto', kernel='gaussian', metric='euclidean', atol=1.0e-5, rtol=1.0e-5, breadth_first=True, leaf_size=40)
     kde.fit(data)
     print("Finished running KDE code")
-    if len(samplearr)==1: plotPrior1D(data[:,0],kde,proplist[0],proplab[0],extratext=extratext)
-    elif len(samplearr)==2: plotPrior2D(data,kde,proplist,proplab,extratext=extratext)
-    else: pass
+    # if len(samplearr)==1: plotPrior1D(data[:,0],kde,proplist[0],proplab[0],extratext=extratext)
+    # elif len(samplearr)==2: plotPrior2D(data,kde,proplist,proplab,extratext=extratext)
+    # else: pass
 
     arr_score = np.transpose(samplearr,axes=(1,2,0)).reshape(samplearr.shape[1]*samplearr.shape[2],samplearr.shape[0])
     arr_split = np.array_split(arr_score,cores,axis=0)
@@ -990,7 +992,7 @@ def getKDEPrior(proplist,proplab):
         kde.fit(data)
         print("Finished running KDE code")
         if len(proplist)==1: plotPrior1D(data[:,0],kde,proplist[0],proplab[0],extratext='z%.2f'%(zred))
-        elif len(proplist)==2: plotPrior2D(data,kde,proplist,proplab,extratext='z%.2f'%(zred))
+        elif len(proplist)==2: plotPrior2D(data,kde,proplist,proplab,extratext='z%.2f'%(zred),gridding=100)
         else: pass
 
 def plotPrior1D(samplearr,kde,propname,proplab,extratext='',gridding=1001):
@@ -1001,7 +1003,12 @@ def plotPrior1D(samplearr,kde,propname,proplab,extratext='',gridding=1001):
     per = np.percentile(samplearr,[1.0,99.0])
     xgrid = np.linspace(per[0],per[1],gridding)
     # ax.plot(samplearr.ravel()[inds],np.exp(priordiff.ravel()[inds]),'r-',lw=2,label='KDE-based PDF')
-    ax.plot(xgrid,np.exp(kde.score_samples(xgrid[:,None])),'r-',lw=2,label='KDE-based PDF')
+    print("About to run score samples in 1-D case")
+    prob = np.exp(kde.score_samples(xgrid[:,None]))
+    print("Finished scoring in 1-D case")
+    integ = trapz(prob,xgrid)
+    print("Total integral over the considered parameter space in this graph:",integ)
+    ax.plot(xgrid,prob,'r-',lw=2,label='KDE-based PDF')
     ax.set_xlabel(proplab)
     ax.set_ylabel("Prior Probability")
     ax.set_yscale('log') # Just in case it wasn't already
@@ -1017,6 +1024,9 @@ def plotPrior2D(samplearr,kde,propnames,proplabs,gridding=201,extratext=''):
     xx, yy = np.meshgrid(gridx,gridy)
     data = np.column_stack((xx.ravel(),yy.ravel()))
     lnprob = kde.score_samples(data).reshape(xx.shape)
+    prob = np.exp(lnprob)
+    integ = trapz(trapz(prob,gridx),gridy)
+    print("Total integral over the considered parameter space in this graph:",integ)
     fig, ax = plt.subplots()
     cf = ax.contourf(gridx,gridy,lnprob,levels=15,cmap='viridis')
     ax.set_xlabel(proplabs[0]); ax.set_ylabel(proplabs[1])
@@ -1222,12 +1232,12 @@ def main(args=None):
             # print("Finished creating original 1-D/2-D prior combination")
             # getKDEPrior(prior_prop,prior_lab)
             # logp_prior = getKDE(prior_prop,prior_samp,zarr)
-            logp_prior = getKDEsimple(prior_prop,prior_samp,proplab=prior_lab)
+            logp_prior = getKDE(prior_prop,prior_samp,zarr)
+            # logp_prior_simp = getKDEsimple(prior_prop,prior_samp,proplab=prior_lab)
             print("Finished all KDE Calculations")
-            print("Nans in logp_prior:",np.isnan(logp_prior).any())
+            print("Nans/infs in logp_prior:",np.isnan(logp_prior).any() or np.isinf(logp_prior).any())
         else: logp_prior = 0.0
         # print(logp_prior_orig-np.amin(logp_prior_orig),logp_prior-np.amin(logp_prior))
-        breakpoint()
         trace, a_poly_T, xx = polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,dep_lim=nlim,tune=args.tune,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,uniform=uniform,var_inf=args.var_inf)
 
         get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp,med_mod,indep_name2,indep_lab2,dep_name,dep_lab,degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,var_inf=args.var_inf)
