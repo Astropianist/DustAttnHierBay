@@ -11,6 +11,7 @@ from DustPymc3_Final import make_prop_dict, plot_model_true, plot_color_map, plo
 import argparse as ap
 from lmfit import Model
 from copy import deepcopy
+from astropy.table import Table
 import seaborn as sns 
 sns.set_context("paper") # options include: talk, poster, paper
 sns.set_style("ticks")
@@ -273,13 +274,18 @@ def plot_lmfit(res,xx,indep,indep_err,dep,dep_err,indep_name,indep_lab,dep_name,
     
     # Save best-fit model to a data file
     dataarr = np.empty((ngrid_best.size,0))
+    colnames = []
     for i in range(len(xx)):
         dataarr = np.append(dataarr,xx[i].reshape(ngrid_best.size,1),axis=1)
-    dataarr = np.append(dataarr,ngrid_best[:,None],axis=1)
-    header = '%s  ngrid'%('  '.join(indep_name))
+        dataarr = np.append(dataarr,xx[i].reshape(ngrid_best.size,1)+med_arr[i],axis=1)
+        colnames.append(indep_name[i]); colnames.append(indep_name[i]+'_plus_med')
+    dataarr = np.append(dataarr,ngrid_best[:,None],axis=1); colnames.append('ngrid')
+    # header = '%s  ngrid'%('  '.join(indep_name))
     dataname = ''
     for name in indep_name: dataname += name+'_'
-    np.savetxt(op.join(img_dir,'ngrid_%s%s_%s_lmfit.dat'%(dataname,dep_name,extratext)),dataarr,header=header,fmt='%.5f')
+    # np.savetxt(op.join(img_dir,'ngrid_%s%s_%s_lmfit.dat'%(dataname,dep_name,extratext)),dataarr,header=header,fmt='%.5f')
+    t = Table(dataarr,names=colnames)
+    t.write(op.join(img_dir,'ngrid_%s%s_%s_lmfit.dat'%(dataname,dep_name,extratext)),overwrite=True,format='ascii')
 
     # Plot stuff!
     plot_model_true(dep,res.best_fit,None,None,img_dir,'Real_n_comp_%s_lmfit'%(extratext),n_err=res.eval_uncertainty(),width_true=dep_err,ngrid_true_plot=False,ylab='LMFIT model %s'%(dep_lab),xlab='Prospector Max L %s'%(dep_lab))

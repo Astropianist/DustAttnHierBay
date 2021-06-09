@@ -25,6 +25,7 @@ from sklearn.model_selection import GridSearchCV
 from multiprocessing import Pool
 from itertools import product
 import logp_funcs.DensityDistFunctions as ddf
+from astropy.table import Table
 
 sns.set_context("paper") # options include: talk, poster, paper
 sns.set_style("ticks")
@@ -295,7 +296,7 @@ def polyNDgen(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extratext
             # dd = pm.DensityDist("dd",ddf.logp_dust(mu,log_width),observed=batch_dep)
         # breakpoint()
         #Perform the sampling!
-        if not var_inf: trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=False)
+        if not var_inf: trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=False, chains=4)
         else: 
             mean_field = pm.fit(numtrials,method='fullrank_advi')
             # mean_field = pm.fit(500,method="svgd",inf_kwargs=dict(n_particles=1000),obj_optimizer=pm.sgd(learning_rate=0.01))
@@ -387,7 +388,7 @@ def polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,plot=False,extratext=
         pm.Potential('marg_logp', marg_logp)
 
         #Perform the sampling!
-        if not var_inf: trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=True)
+        if not var_inf: trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=True, chains=4)
         else:
             mean_field = pm.fit(10000,method='fullrank_advi')
             trace_0 = mean_field.sample(4000)
@@ -722,12 +723,17 @@ def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep
     indep_avg = np.mean(indep_samp,axis=2)
 
     dataarr = np.empty((ngrid_med.size,0))
+    colnames = []
     for i in range(len(xx)):
         dataarr = np.append(dataarr,xx[i].reshape(ngrid_med.size,1),axis=1)
-    dataarr = np.append(dataarr,ngrid_med[:,None],axis=1)
+        dataarr = np.append(dataarr,xx[i].reshape(ngrid_med.size,1)+med_arr[i],axis=1)
+        colnames.append(indep_name[i]); colnames.append(indep_name[i]+'_plus_med')
+    dataarr = np.append(dataarr,ngrid_med[:,None],axis=1); colnames.append('ngrid')
     dataname = ''
     for name in indep_name: dataname += name+'_'
-    np.savetxt(op.join(img_dir,'ngrid_%s%s_%s_vi%d.dat'%(dataname,dep_name,extratext,var_inf)),dataarr,header='%s  ngrid'%('  '.join(indep_name)),fmt='%.5f')
+    # np.savetxt(op.join(img_dir,'ngrid_%s%s_%s_vi%d.dat'%(dataname,dep_name,extratext,var_inf)),dataarr,header='%s  ngrid'%('  '.join(indep_name)),fmt='%.5f')
+    t = Table(dataarr,names=colnames)
+    t.write(op.join(img_dir,'ngrid_%s%s_%s_HB.dat'%(dataname,dep_name,extratext)),overwrite=True,format='ascii')
     trace.to_netcdf(op.join(img_dir,'trace_%s%s_%s_vi%d.nc'%(dataname,dep_name,extratext,var_inf)))
     # pm.save_trace(trace,directory=img_dir)
 
