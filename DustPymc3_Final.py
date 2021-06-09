@@ -86,16 +86,188 @@ def parse_args(argv=None):
     parser.add_argument('-d1m','--d1_mod',help='Whether or not to include birth cloud dust optical depth as independent variable in model',action='count',default=0)
     parser.add_argument('-d2m','--d2_mod',help='Whether or not to include diffuse dust optical depth as independent variable in model',action='count',default=0)
     parser.add_argument('-n','--n',help='Whether or not to use dust index as dependent variable',action='count',default=0)
+    parser.add_argument('-bv','--bivar',help='Whether or not to perform bivariate fitting',action='count',default=0)
 
     args = parser.parse_args(args=argv)
     args.d1 = 0; args.d2 = 0; args.i = 0
     if not args.n: args.d2_mod = 0
     if args.real: 
-        if args.size==-1: args.dir_orig = 'Full'
-        else: args.dir_orig = 'NewTests'
-    else: args.dir_orig = 'PolyGen'
+        if args.bivar:
+            if args.size==-1: args.dir_orig = 'Bivar_Full'
+            else: args.dir_orig = 'Bivar_Sample'
+        else:
+            if args.size==-1: args.dir_orig = 'Full'
+            else: args.dir_orig = 'NewTests'
+    else: 
+        if args.bivar: args.dir_orig = 'Bivar'
+        else: args.dir_orig = 'PolyGen'
 
     return args
+
+def polyND_bivar(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extratext='',nlim=np.array([-1.0,0.4]),taulim=np.array([0.0,4.0]),degree=2,sampling=1000,tune=1000,errmult=1.0,errmultn=1.0,errmultt=1.0,errmultcross=1.0,indep_true=None,sigarr=None,sigN=0.19,sigT=0.12,n=None,tau=None):
+    ''' Simulation of data where the dust index n is a 2-D polynomial function of stellar mass and sSFR.
+
+    Parameters
+    ----------
+    img_dir: Str
+        Parent directory in which folders will be created for the particular run
+    size: Int
+        Number of "galaxies" in the sample
+    samples: Int
+        Number of "posterior samples" available for each galaxy
+    plot: Bool
+        Whether or not an arviz plot should be made
+    extratext: Str
+        An addition to the plot name to distinguish it from previous runs
+    mlim, ssfrlim, nlim: Two-element lists
+        Lower and upper limits for all parameters in question
+    degree: Int
+        Polynomial degree in each variable
+    sampling: Int
+        Number of draws for sampling (not including burn-in steps)
+    tune: Int
+        Number of burn-in steps for each sampling chain
+    errmult: Float
+        Multiplicative factor that determines how large the simulated data errors are
+    errmultn: Float
+        Multiplicative factor that determines how large the intrinsic dispersion in the relation is
+    logM, ssfr, n: 1-D Numpy Arrays
+        If provided, this will supercede the creation of "true" values for log(M), log(sSFR), and n_grid
+    Returns
+    -------
+    trace: Pymc3 trace object
+        Result of pymc3 sampler
+    a_poly_T: 2-D Numpy arrays
+        Matrix whose inverse times n_grid gives polynomial coefficients
+    xx: List of 2-D Numpy arrays
+        Meshgrid where dust index is computed
+    ngrid_true: 1-D Numpy array
+        True values for dust index at (coarse) grid
+    coefs_true: 1-D Numpy array
+        True values for polynomial coefficients
+    n_true: 1-D Numpy array
+        True values for dust index at the true locations of the sample
+    width_true: Float
+        True intrinsic dispersion in relation
+    indep_true: 2-D Numpy array
+        Array with each row corresponding to true values of an independent variable (log(M) and log(sSFR))
+    med_logM: Float
+        Median log(M) value--for adding back to indep_true to get the actual log(M) values in plots 
+    med_ssfr: Float
+        Median log(sSFR) value
+    
+    The function runs the pymc3 sampler on this toy example and prints the results; an arviz plot of the results is also made if plot==True
+    '''
+    # Since there are six figures to create for one run of the code, we create a directory for each run, seperated by polynomial degree (and the run-specific text)
+    img_dir = op.join(img_dir_orig,'deg_%d'%(degree),extratext)
+    mkpath(img_dir)
+
+    if limlist is None:
+        limlist = []
+        ndim = len(indep_true)
+        for indep in indep_true:
+            # limlist.append(np.percentile(indep,[2.5,97.5]))
+            limlist.append(np.array([min(indep),max(indep)]))
+    else:
+        ndim = len(limlist)
+        indep_true = np.empty((0,size))
+        for lim in limlist:
+            indep_true = np.append(indep_true,np.random.uniform(lim[0],lim[-1],(1,size)),axis=0)
+
+    # Determining true parameters
+    width_true = 0.1*errmultn #Intrinsic dispersion in relation param 1 (n)
+    width_true2 = 0.1*errmultt #Intrinsic dispersion in relation param 2 (tau)
+    rho_true = 0.3 #Cross intrinsic dispersion
+    x = np.empty((0,degree+1)) # To set up grid on which dust parameter n will be defined
+    for lim in limlist:
+        x = np.append(x,np.linspace(lim[0],lim[-1],degree+1)[None,:],axis=0)
+    xx = np.meshgrid(*x) #N-D Grid for polynomial computations
+    a_poly_T = get_a_polynd(xx).T #Array related to grid that will be used in least-squares computation
+    aTinv = np.linalg.inv(a_poly_T)
+    rc = -1.0 #Rcond parameter set to -1 for keeping all entries of result to machine precision, regardless of rank issues
+    rng = nlim[1]-nlim[0]
+    rng2 = taulim[1]-taulim[0]
+    avg = (nlim[1]+nlim[0])/2.0
+    avg2 = (taulim[1]+taulim[0])/2.0
+    if n is None:
+        np.random.seed(3890)
+        ngrid_true = 0.9*rng*np.random.rand(xx[0].size)-0.9*rng/2.0 + avg #True values of dust parameter at the grid
+        taugrid_true = truncnorm.rvs(-0.3,3.7,loc=0.3,scale=1.0,size=xx[0].size) #True values of 2nd dust parameter at the grid
+    # When "data" inputs provided, use measured n to determine approximate grid values for n according to Prospector
+    else:
+        ngrid_true, taugrid_true = np.zeros(xx[0].size), np.zeros(xx[0].size)
+        for index, i in enumerate(np.ndindex(xx[0].shape)):
+            totarr = np.zeros_like(indep_true[0])
+            for j, ind in enumerate(i):
+                totarr+=abs(indep_true[j]-x[j,ind])
+            ngrid_true[index] = n[np.argmin(totarr)]
+            taugrid_true[index] = tau[np.argmin(totarr)]
+    coefs_true = np.linalg.lstsq(a_poly_T,ngrid_true,rc)[0]
+    coefs_true2 = np.linalg.lstsq(a_poly_T,taugrid_true,rc)[0] #Calculation of polynomial coefficients from the grid
+    Z1 = np.random.randn(size) # Independent random variable for creating true parameters that follow a 2D Gaussian distribution
+    Z2 = np.random.randn(size) # Independent random variable for creating true parameters that follow a 2D Gaussian distribution
+    n_true = calc_poly(indep_true,coefs_true,degree) + width_true * Z1 #True dust index parameter n is polynomial function of n with some intrinsic scatter
+    tau_true = calc_poly(indep_true,coefs_true2,degree) + width_true2 * (rho_true*Z1 + np.sqrt(1.0-rho_true**2)*Z2) #True dust index parameter tau is polynomial function of tau with some intrinsic scatter
+
+    # Observed values of the galaxy parameters
+    if sigarr is None:
+        sigarr = np.repeat(0.15,len(indep_true))*errmult
+    else:
+        sigarr *= errmult
+    sigN *= errmult; sigT *= errmult
+    # First we need to "move" the mean of the posterior, then we generate posterior samples
+    indep_samp = indep_true[:,:,None] + sigarr[:,None,None]*np.random.randn(ndim,size,1) + sigarr[:,None,None]*np.random.randn(ndim,size,samples)
+
+    Z1 = np.random.randn(size,1) # Independent random variable for creating true parameters that follow a 2D Gaussian distribution
+    Z2 = np.random.randn(size,1) # Independent random variable for creating true parameters that follow a 2D Gaussian distribution
+    Z11 = np.random.randn(size,samples) # Independent random variable for creating true parameters that follow a 2D Gaussian distribution
+    Z21 = np.random.randn(size,samples) # Independent random variable for creating true parameters that follow a 2D Gaussian distribution
+    n_samp = n_true[:, None] + sigN * Z1 + sigN * Z11
+    tau_samp = tau_true[:, None] + sigT * (rho_true*Z1 + np.sqrt(1.0-rho_true)*Z2) + sigT * (rho_true*Z11 + np.sqrt(1.0-rho_true)*Z21)
+    # 3-D array that will be multiplied by coefficients to calculate the dust parameter at the observed independent variable values
+    term = calc_poly_tt(indep_samp,degree)
+    # breakpoint()
+    # Pymc3 model creation
+    with pm.Model() as model:
+        # Priors on the parameters ngrid (n over the grid) and log_width (true width of relation)
+        ngrid = pm.Uniform("ngrid",lower=nlim[0]-1.0e-5,upper=nlim[1]+1.0e-5,shape=ngrid_true.size,testval=0.9*rng*np.random.rand(ngrid_true.size)-0.9*rng/2.0 + avg)
+        taugrid = pm.TruncatedNormal("taugrid",mu=0.3,sigma=1.0,lower=taulim[0]-1.0e-5,upper=taulim[1]+1.0e-5,shape=taugrid_true.size,testval=0.9*rng2*np.random.rand(taugrid_true.size)-0.9*rng2/2.0 + avg2)
+        # log_width = pm.StudentT("log_width", nu=5, mu=np.log(width_true), lam=0.5, testval=-5.0)
+        log_width = pm.Uniform("log_width",lower=np.log(width_true)-1.0,upper=np.log(width_true)+1.0,testval=np.log(width_true)+0.5*np.random.rand()-0.25)
+        log_width2 = pm.Uniform("log_width2",lower=np.log(width_true2)-1.0,upper=np.log(width_true2)+1.0,testval=np.log(width_true2)+0.5*np.random.rand()-0.25)
+        rho = pm.Uniform("rho",lower=-1.0,upper=1.0,testval=np.random.uniform(-0.5,0.5))
+
+        # Compute the expected n at each sample
+        coefs = tt.dot(aTinv,ngrid)
+        coefs2 = tt.dot(aTinv,taugrid)
+        mu = tt.tensordot(coefs,term,axes=1)
+        mu2 = tt.tensordot(coefs2,term,axes=1)
+
+        # The line has some width: we're calling it a Gaussian in n,tau
+        zbiv = (n_samp-mu)**2 * pm.math.exp(-2*log_width) + (tau_samp-mu2)**2 * pm.math.exp(-2*log_width2) - 2 * rho * (n_samp-mu) * (tau_samp-mu2) * pm.math.exp(-log_width-log_width2)
+
+        logp = -0.5 * zbiv/(1.0-rho**2) - log_width - log_width2 - pm.math.log(pm.math.sqrt(1-rho**2))
+
+        # Compute the marginalized likelihood
+        max_logp = tt.max(logp, axis=1)
+        marg_logp = max_logp + pm.math.log(pm.math.sum(pm.math.exp(logp - max_logp[:, None]), axis=1))
+        pm.Potential('marg_logp', marg_logp)
+
+        #Perform the sampling!
+        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=False)
+
+        # Use the arviz module to take a look at the results
+        if plot:
+            az.plot_trace(trace)
+            plt.savefig(op.join(img_dir,"polyND%s_trace.png"%(extratext)),bbox_inches='tight',dpi=300)
+        print(az.summary(trace,round_to=2))
+        print("ngrid_true:"); print(ngrid_true)
+        print("taugrid_true:"); print(taugrid_true)
+        print("log_width_true:"); print(np.log(width_true))
+        print("log_width_true2:"); print(np.log(width_true2))
+        print("rho_true:"); print(rho_true)
+
+    return trace, a_poly_T, xx, ngrid_true, taugrid_true, coefs_true, coefs_true2, n_true, tau_true, width_true, width_true2, rho_true, indep_true, indep_samp, n_samp, tau_samp
 
 def polyNDgen(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extratext='',nlim=np.array([-1.0,0.4]),degree=2,degree2=1,sampling=1000,tune=1000,errmult=1.0,errmultn=1.0,indep_true=None,sigarr=None,sigN=0.19,n=None,limlist2=None,indep_true2=None,sigarr2=None,indep_name=None,indep_name2=None,var_inf=False,numtrials=30000,minibatch_size=batch_size):
     ''' Simulation of data where the dust index n is a 2-D polynomial function of stellar mass and sSFR.
@@ -393,6 +565,95 @@ def polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,plot=False,extratext=
             mean_field = pm.fit(10000,method='fullrank_advi')
             trace_0 = mean_field.sample(4000)
             trace = az.from_pymc3(trace_0)
+
+        # Use the arviz module to take a look at the results
+        if plot:
+            az.plot_trace(trace)
+            plt.savefig(op.join(img_dir,"polyND%s_trace.png"%(extratext)),bbox_inches='tight',dpi=300)
+        print(az.summary(trace,round_to=2))
+
+    return trace, a_poly_T, xx
+
+def polyNDDataBivar(indep_samp,n_samp,tau_samp,logp_prior,img_dir_orig,plot=False,extratext='',degree=2,sampling=1000,tune=1000,nlim=np.array([-1.0,0.4]),taulim=np.array([0.0,4.0])):
+    ''' Simulation of data where the dust index n is a 2-D polynomial function of stellar mass and sSFR.
+
+    Parameters
+    ----------
+    indep_samp, dep_samp: 3-D, 2-D Numpy Array
+        Prospector samples for the independent and dependent variables, respectively
+    img_dir_orig: Str
+        Parent directory in which folders will be created for the particular run
+    plot: Bool
+        Whether or not an arviz plot should be made
+    extratext: Str
+        An addition to the plot name to distinguish it from previous runs
+    degree: Int
+        Polynomial degree in each variable
+    sampling: Int
+        Number of draws for sampling (not including burn-in steps)
+    tune: Int
+        Number of burn-in steps for each sampling chain
+    dep_lim: Two-element Numpy Array (or list)
+        Limits for dependent variable
+    uniform: Bool
+        Whether or not prior distribution for dependent variable should be uniform (alternative is clipped Gaussian)
+    Returns
+    -------
+    trace: Pymc3 trace object
+        Result of pymc3 sampler
+    a_poly_T: 2-D Numpy arrays
+        Matrix whose inverse times n_grid gives polynomial coefficients
+    xx: List of 2-D Numpy arrays
+        Meshgrid where dust index is computed
+    
+    The function runs the pymc3 sampler on the Prospector data and prints the results; an arviz plot of the results is also made if plot==True
+    '''
+    # We create a directory for each run, seperated by polynomial degree (and the run-specific text)
+    img_dir = op.join(img_dir_orig,'deg_%d'%(degree),extratext)
+    mkpath(img_dir)
+    ndim = len(indep_samp)
+    limlist = []
+    for indep in indep_samp:
+        per = np.percentile(indep,[1.0,99.0])
+        # limlist.append(np.array([np.amin(indep),np.amax(indep)]))
+        limlist.append(per)
+    x = np.empty((0,degree+1)) # To set up grid on which true dust parameter n will be defined
+    for lim in limlist:
+        x = np.append(x,np.linspace(lim[0],lim[-1],degree+1)[None,:],axis=0)
+    xx = np.meshgrid(*x) #N-D Grid for polynomial computations
+    a_poly_T = get_a_polynd(xx).T #Array related to grid that will be used in least-squares computation
+    aTinv = np.linalg.inv(a_poly_T)
+    rc = -1.0 #Rcond parameter set to -1 for keeping all entries of result to machine precision, regardless of rank issues
+    # breakpoint()
+    # 3-D array that will be multiplied by coefficients to calculate the dust parameter at the observed independent variable values
+    term = calc_poly_tt(indep_samp,degree)
+    # Pymc3 model creation
+    with pm.Model() as model:
+        # Priors on the parameters ngrid (n over the grid) and log_width (true width of relation)
+        ngrid = pm.Uniform("ngrid",lower=nlim[0]-1.0e-5,upper=nlim[1]+1.0e-5,shape=xx[0].size,testval=np.random.uniform(nlim[0],nlim[1],xx[0].size))
+        taugrid = pm.TruncatedNormal("taugrid",mu=0.3,sigma=1.0,lower=taulim[0]-1.0e-5,upper=taulim[1]+1.0e-5,shape=xx[0].size,testval=np.random.uniform(taulim[0],taulim[1]/2.0,xx[0].size))
+        log_width = pm.StudentT("log_width", nu=5, mu=-3.0, lam=0.5, testval=-3.5)
+        log_width2 = pm.StudentT("log_width2", nu=5, mu=-2.9, lam=0.48, testval=-3.8)
+        rho = pm.Uniform("rho",lower=-1.0,upper=1.0,testval=np.random.uniform(-0.5,0.5))
+
+        # Compute the expected n at each sample
+        coefs = tt.dot(aTinv,ngrid)
+        coefs2 = tt.dot(aTinv,taugrid)
+        mu = tt.tensordot(coefs,term,axes=1)
+        mu2 = tt.tensordot(coefs2,term,axes=1)
+
+        # The line has some width: we're calling it a Gaussian in n,tau
+        zbiv = (n_samp-mu)**2 * pm.math.exp(-2*log_width) + (tau_samp-mu2)**2 * pm.math.exp(-2*log_width2) - 2 * rho * (n_samp-mu) * (tau_samp-mu2) * pm.math.exp(-log_width-log_width2)
+
+        logp = -0.5 * zbiv/(1.0-rho**2) - log_width - log_width2 - pm.math.log(pm.math.sqrt(1-rho**2))
+
+        # Compute the marginalized likelihood
+        max_logp = tt.max(logp, axis=1)
+        marg_logp = max_logp + pm.math.log(pm.math.sum(pm.math.exp(logp - max_logp[:, None]), axis=1))
+        pm.Potential('marg_logp', marg_logp)
+
+        #Perform the sampling!
+        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=True, chains=4)
 
         # Use the arviz module to take a look at the results
         if plot:
@@ -1198,6 +1459,8 @@ def data_true(args):
         prior_lab.append(r"$\hat{\tau}_{\lambda,2}$")
         uniform = False
 
+    if args.bivar: dep_samp = [n[indfin], tau2[indfin]]
+
     return indep_samp, dep_samp, prior_samp, med_mod, z[indfin], prior_prop, prior_lab, uniform
 
 def label_creation(args,prop_dict,dep_dict):
@@ -1244,17 +1507,33 @@ def main(args=None):
             print("Nans/infs in logp_prior:",np.isnan(logp_prior).any() or np.isinf(logp_prior).any())
         else: logp_prior = 0.0
         # print(logp_prior_orig-np.amin(logp_prior_orig),logp_prior-np.amin(logp_prior))
-        trace, a_poly_T, xx = polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,dep_lim=nlim,tune=args.tune,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,uniform=uniform,var_inf=args.var_inf)
+        if args.bivar:
+            trace, a_poly_T, xx = polyNDDataBivar(indep_samp,dep_samp[0],dep_samp[1],logp_prior,img_dir_orig,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,tune=args.tune)
 
-        get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp,med_mod,indep_name2,indep_lab2,dep_name,dep_lab,degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,var_inf=args.var_inf)
+            get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp[0],med_mod,indep_name2,indep_lab2,dep_dict['names']['n'],dep_dict['labels']['n'],degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,var_inf=0)
+
+            get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp[1],med_mod,indep_name2,indep_lab2,dep_dict['names']['tau2'],dep_dict['labels']['tau2'],degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,var_inf=0)
+
+        else:
+            trace, a_poly_T, xx = polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,dep_lim=nlim,tune=args.tune,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,uniform=uniform,var_inf=args.var_inf)
+
+            get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp,med_mod,indep_name2,indep_lab2,dep_name,dep_lab,degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,var_inf=args.var_inf)
 
     else: 
         img_dir_orig = op.join('DataSim',args.dir_orig)
         indep_true, med, n, limlist, indep_true2, med_mod, limlist2 = data_simulation(args,prop_dict)
 
-        trace, a_poly_T, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp = polyNDgen(img_dir_orig, limlist=limlist, nlim=nlim, size=args.size,samples=args.samples,tune=args.tune,errmult=args.error_mult,errmultn=args.error_mult_n,plot=args.plot,extratext=args.extratext,degree=args.degree,sampling=args.steps,sigarr=sigarr,sigN=sigN,indep_true=indep_true,n=n,degree2=args.degree2,limlist2=limlist2,indep_true2=indep_true2,sigarr2=sigarr2,indep_name=indep_name,indep_name2=indep_name2,var_inf=args.var_inf,numtrials=20000,minibatch_size=200)
+        if args.bivar:
+            trace, a_poly_T, xx, ngrid_true, taugrid_true, coefs_true, coefs_true2, n_true, tau_true, width_true, width_true2, rho_true, indep_true, indep_samp, n_samp, tau_samp = polyND_bivar(img_dir_orig, limlist=limlist, nlim=nlim, size=args.size,samples=args.samples,tune=args.tune,errmult=args.error_mult,errmultn=args.error_mult_n,errmultt=args.error_mult_t,errmultcross=args.error_mult_cross,plot=args.plot,extratext=args.extratext,degree=args.degree,sampling=args.steps,sigarr=sigarr,sigN=dep_dict['sigma']['n'],sigT=dep_dict['sigma']['tau2'],indep_true=indep_true,n=None,tau=None)
+    
+            get_relevant_info_ND(trace, a_poly_T, xx, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_samp, n_samp, med, indep_name, indep_lab, dep_name=dep_dict['names']['n'], dep_lab=dep_dict['labels']['n'], degree=args.degree,extratext=args.extratext,numsamp=500,img_dir_orig=img_dir_orig)
 
-        get_relevant_info_ND_Gen(trace, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp, med, med_mod, indep_name, indep_name2, indep_lab2, dep_name=dep_name, dep_lab=dep_lab, degree=args.degree,degree2=args.degree2,extratext=args.extratext,numsamp=500,img_dir_orig=img_dir_orig,var_inf=args.var_inf)
+            get_relevant_info_ND(trace, a_poly_T, xx, taugrid_true, coefs_true2, tau_true, width_true2, indep_true, indep_samp, tau_samp, med, indep_name, indep_lab, dep_name=dep_dict['names']['tau2'], dep_lab=dep_dict['labels']['tau2'], degree=args.degree,extratext=args.extratext,numsamp=500,img_dir_orig=img_dir_orig,grid_name='taugrid',width_name='log_width2')
+            
+        else:
+            trace, a_poly_T, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp = polyNDgen(img_dir_orig, limlist=limlist, nlim=nlim, size=args.size,samples=args.samples,tune=args.tune,errmult=args.error_mult,errmultn=args.error_mult_n,plot=args.plot,extratext=args.extratext,degree=args.degree,sampling=args.steps,sigarr=sigarr,sigN=sigN,indep_true=indep_true,n=n,degree2=args.degree2,limlist2=limlist2,indep_true2=indep_true2,sigarr2=sigarr2,indep_name=indep_name,indep_name2=indep_name2,var_inf=args.var_inf,numtrials=20000,minibatch_size=200)
+
+            get_relevant_info_ND_Gen(trace, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp, med, med_mod, indep_name, indep_name2, indep_lab2, dep_name=dep_name, dep_lab=dep_lab, degree=args.degree,degree2=args.degree2,extratext=args.extratext,numsamp=500,img_dir_orig=img_dir_orig,var_inf=args.var_inf)
 
 if __name__=='__main__':
     main()
