@@ -39,7 +39,8 @@ min_pdf = 1.0e-15
 ssfr_lim_prior = -15.0
 ssfr_lims_data = (-14.5,-7.0)
 cores = 4
-batch_size = 500
+fl_fit_stats_univar = 'run_convergence_univar.txt'
+fl_fit_stats_bivar = 'run_convergence_bivar.txt'
 
 def mass_completeness(zred):
     """used mass-completeness estimates from Tal+14, for FAST masses
@@ -253,7 +254,7 @@ def polyND_bivar(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extrat
         pm.Potential('marg_logp', marg_logp)
 
         #Perform the sampling!
-        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=False)
+        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=False, discard_tuned_samples=False)
 
         # Use the arviz module to take a look at the results
         if plot:
@@ -271,9 +272,9 @@ def polyND_bivar(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extrat
         print("log_width_true2:"); print(np.log(width_true2))
         print("rho_true:"); print(rho_true)
 
-    return trace, a_poly_T, xx, ngrid_true, taugrid_true, coefs_true, coefs_true2, n_true, tau_true, width_true, width_true2, rho_true, indep_true, indep_samp, n_samp, tau_samp
+    return trace[tune:], a_poly_T, xx, ngrid_true, taugrid_true, coefs_true, coefs_true2, n_true, tau_true, width_true, width_true2, rho_true, indep_true, indep_samp, n_samp, tau_samp
 
-def polyNDgen(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extratext='',nlim=np.array([-1.0,0.4]),degree=2,degree2=1,sampling=1000,tune=1000,errmult=1.0,errmultn=1.0,indep_true=None,sigarr=None,sigN=0.19,n=None,limlist2=None,indep_true2=None,sigarr2=None,indep_name=None,indep_name2=None,numtrials=30000,minibatch_size=batch_size):
+def polyNDgen(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extratext='',nlim=np.array([-1.0,0.4]),degree=2,degree2=1,sampling=1000,tune=1000,errmult=1.0,errmultn=1.0,indep_true=None,sigarr=None,sigN=0.19,n=None,limlist2=None,indep_true2=None,sigarr2=None,indep_name=None,indep_name2=None,numtrials=30000):
     ''' Simulation of data where the dust index n is a 2-D polynomial function of stellar mass and sSFR.
 
     Parameters
@@ -446,7 +447,7 @@ def polyNDgen(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extratext
         pm.Potential('marg_logp', marg_logp)
         
         #Perform the sampling!
-        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=False, chains=4)
+        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=False, chains=4, discard_tuned_samples=False)
 
         # Use the arviz module to take a look at the results
         if plot:
@@ -460,7 +461,7 @@ def polyNDgen(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extratext
         print("ngrid_true:"); print(ngrid_true)
         print("log_width_true:"); print(np.log(width_true))
     
-    return trace, a_poly_T, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp
+    return trace[tune:], a_poly_T, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp
 
 def polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,plot=False,extratext='',degree=2,sampling=1000,tune=1000,dep_lim=np.array([-1.0,0.4]),uniform=True):
     ''' Simulation of data where the dust index n is a 2-D polynomial function of stellar mass and sSFR.
@@ -538,16 +539,21 @@ def polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,plot=False,extratext=
         pm.Potential('marg_logp', marg_logp)
 
         #Perform the sampling!
-        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=True, chains=4)
+        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=True, chains=4, discard_tuned_samples=False)
 
         # Use the arviz module to take a look at the results
         if plot:
             az.plot_trace(trace)
             plt.savefig(op.join(img_dir,"polyND%s_trace.png"%(extratext)),bbox_inches='tight',dpi=300)
-            trace_df = trace.to_dataframe(groups='posterior')
-            randinds = np.random.choice(len(ngrid_true),2,replace=False)
-            cols_to_keep = [f'ngrid__{min(randinds)}', f'ngrid__{max(randinds)}', 'log_width']
+            trace_df2 = trace.to_dataframe(groups='posterior')
+            trace_df = trace.to_dataframe(groups='warmup_posterior')
+            trace_df = trace_df.append(trace_df2,ignore_index=True)
+            randinds = np.random.choice(xx[0].size,2,replace=False)
+            lr, hr = min(randinds), max(randinds)
+            cols_to_keep = [(f'ngrid[{lr}]', lr), (f'ngrid[{hr}]', hr), 'log_width']
             fig = corner.corner(trace_df[cols_to_keep])
+            fig.savefig(op.join(img_dir,"trace_with_tune%s.png"%(extratext)))
+            fig = corner.corner(trace_df2[cols_to_keep])
             fig.savefig(op.join(img_dir,"trace%s.png"%(extratext)))
         print(az.summary(trace,round_to=2))
 
@@ -632,16 +638,21 @@ def polyNDDataBivar(indep_samp,n_samp,tau_samp,logp_prior,img_dir_orig,plot=Fals
         pm.Potential('marg_logp', marg_logp)
 
         #Perform the sampling!
-        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=True, chains=4)
+        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=True, chains=4, discard_tuned_samples=False)
 
         # Use the arviz module to take a look at the results
         if plot:
             az.plot_trace(trace)
             plt.savefig(op.join(img_dir,"polyND%s_trace.png"%(extratext)),bbox_inches='tight',dpi=300)
-            trace_df = trace.to_dataframe(groups='posterior')
-            randinds = np.random.randint(0,len(ngrid_true),2)
-            cols_to_keep = [f'ngrid__{randinds[0]}', f'taugrid__{randinds[1]}', 'log_width','log_width2','rho']
+            trace_df2 = trace.to_dataframe(groups='posterior')
+            trace_df = trace.to_dataframe(groups='warmup_posterior')
+            trace_df.append(trace_df2,ignore_index=True)
+            randinds = np.random.randint(0,xx[0].size,2)
+            lr, hr = randinds[0], randinds[1]
+            cols_to_keep = [(f'ngrid[{lr}]', lr), (f'taugrid[{hr}]', hr), 'log_width','log_width2','rho']
             fig = corner.corner(trace_df[cols_to_keep])
+            fig.savefig(op.join(img_dir,"trace_with_tune%s.png"%(extratext)))
+            fig = corner.corner(trace_df2[cols_to_keep])
             fig.savefig(op.join(img_dir,"trace%s.png"%(extratext)))
         print(az.summary(trace,round_to=2))
 
@@ -950,7 +961,7 @@ def get_relevant_info_ND_Gen(trace,a_poly_T2,xx_true,xx,ngrid_true,coefs_true,n_
 
             plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],stdmod/width_mean,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx[i].ravel()+med_arr[i],xx[j].ravel()+med_arr[j],img_dir,'ModErr_%s_%s_%s'%(dep_name,indep_name[i],indep_name[j])+extratext,levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='Model %s uncertainty / intrinsic width'%(dep_lab),xtrue=indep_true2[i]+med_arr[i],ytrue=indep_true2[j]+med_arr[j],xtrueerr=np.std(indep_samp2[i],axis=1),ytrueerr=np.std(indep_samp2[j],axis=1))
 
-def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep_name,indep_lab,dep_name='n',dep_lab='n',degree2=1,levels=10,extratext='',fine_grid=201,bins=20,img_dir_orig=op.join('DataTrue','NewTests'),grid_name='ngrid',width_name='log_width',numsamp=50):
+def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep_name,indep_lab,dep_name='n',dep_lab='n',degree2=1,levels=10,extratext='',fine_grid=201,bins=20,img_dir_orig=op.join('DataTrue','NewTests'),grid_name='ngrid',width_name='log_width',numsamp=50,fl_stats=fl_fit_stats_univar,append_to_file=True):
     nlen, nwid = len(n_samp), len(n_samp[0])
     ndim2 = len(indep_samp)
     img_dir = op.join(img_dir_orig,'deg_%d'%(degree2),extratext)
@@ -976,11 +987,34 @@ def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep
     dataarr = np.append(dataarr,ngrid_med[:,None],axis=1); colnames.append('ngrid')
     dataname = ''
     for name in indep_name: dataname += name+'_'
+    if 'univar' in fl_stats: dataname+=dep_name
+    else: 
+        dataname+='n_dust2'
+        rho = np.array(getattr(trace.posterior,'rho'))
+        log_width2 = np.array(getattr(trace.posterior,'log_width2'))
     # np.savetxt(op.join(img_dir,'ngrid_%s%s_%s_vi%d.dat'%(dataname,dep_name,extratext,var_inf)),dataarr,header='%s  ngrid'%('  '.join(indep_name)),fmt='%.5f')
     t = Table(dataarr,names=colnames)
-    t.write(op.join(img_dir,'ngrid_%s%s_%s_HB.dat'%(dataname,dep_name,extratext)),overwrite=True,format='ascii')
-    trace.to_netcdf(op.join(img_dir,'trace_%s%s_%s.nc'%(dataname,dep_name,extratext)))
+    t.write(op.join(img_dir,'ngrid_%s_%s_HB.dat'%(dataname,extratext)),overwrite=True,format='ascii')
+    trace.to_netcdf(op.join(img_dir,'trace_%s_%s.nc'%(dataname,extratext)))
     # pm.save_trace(trace,directory=img_dir)
+
+    rhat_arr = []
+    rhats = az.rhat(trace)
+    rhat_keys = list(rhats.keys())
+    for key in rhat_keys:
+        val = rhats[key].values
+        if val.ndim==0: rhat_arr+=[float(val)]
+        else: rhat_arr+=[max(val)]
+    num_div = len(trace.sample_stats.diverging.values.nonzero()[0])
+    print("rhat_keys:", rhat_keys)
+    rhat_argsort = np.argsort(rhat_keys)
+    if append_to_file:
+        with open(fl_stats,'a') as fl:
+            fl.write('%s_%s  '%(dataname, extratext))
+            fl.write(f'{nlen}  {nwid}  {len(log_width)}  ')
+            for i_as in rhat_argsort: fl.write('%.4f  '%(rhat_arr[i_as]))
+            if 'bivar' in fl_stats: fl.write('%.4f  %.4f  %.4f \n'%(np.log(width_med),np.median(log_width2),np.median(rho)))
+            else: fl.write('%.4f \n'%(np.log(width_med)))
 
     inds = np.random.choice(len(log_width),size=numsamp,replace=False)
     ngrid_mod_all, width_mod_all = np.empty((numsamp,coefs_med.size)), np.empty(numsamp)
@@ -1433,17 +1467,22 @@ def data_true(args):
         prior_prop.append('dust2')
         prior_lab.append(r"$\hat{\tau}_{\lambda,2}$")
 
-    if args.n: 
-        dep_samp = n[indfin]
-        uniform = True
-    else: 
-        dep_samp = tau2[indfin]
-        prior_samp = np.append(prior_samp,dep_samp[None,:,:],axis=0)
+    if args.bivar: 
+        dep_samp = [n[indfin], tau2[indfin]]
+        prior_samp = np.append(prior_samp,tau2[indfin][None,:,:],axis=0)
         prior_prop.append('dust2')
         prior_lab.append(r"$\hat{\tau}_{\lambda,2}$")
         uniform = False
-
-    if args.bivar: dep_samp = [n[indfin], tau2[indfin]]
+    else:
+        if args.n and not args.bivar: 
+            dep_samp = n[indfin]
+            uniform = True
+        else: 
+            dep_samp = tau2[indfin]
+            prior_samp = np.append(prior_samp,dep_samp[None,:,:],axis=0)
+            prior_prop.append('dust2')
+            prior_lab.append(r"$\hat{\tau}_{\lambda,2}$")
+            uniform = False
 
     return indep_samp, dep_samp, prior_samp, med_mod, z[indfin], prior_prop, prior_lab, uniform
 
@@ -1494,9 +1533,9 @@ def main(args=None):
         if args.bivar:
             trace, a_poly_T, xx = polyNDDataBivar(indep_samp,dep_samp[0],dep_samp[1],logp_prior,img_dir_orig,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,tune=args.tune)
 
-            get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp[0],med_mod,indep_name2,indep_lab2,dep_dict['names']['n'],dep_dict['labels']['n'],degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig)
+            get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp[0],med_mod,indep_name2,indep_lab2,dep_dict['names']['n'],dep_dict['labels']['n'],degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,fl_stats=fl_fit_stats_bivar)
 
-            get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp[1],med_mod,indep_name2,indep_lab2,dep_dict['names']['tau2'],dep_dict['labels']['tau2'],degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig)
+            get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp[1],med_mod,indep_name2,indep_lab2,dep_dict['names']['tau2'],dep_dict['labels']['tau2'],degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,fl_stats=fl_fit_stats_bivar,append_to_file=False)
 
         else:
             trace, a_poly_T, xx = polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,dep_lim=nlim,tune=args.tune,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,uniform=uniform)
@@ -1515,7 +1554,7 @@ def main(args=None):
             get_relevant_info_ND(trace, a_poly_T, xx, taugrid_true, coefs_true2, tau_true, width_true2, indep_true, indep_samp, tau_samp, med, indep_name, indep_lab, dep_name=dep_dict['names']['tau2'], dep_lab=dep_dict['labels']['tau2'], degree=args.degree,extratext=args.extratext,numsamp=500,img_dir_orig=img_dir_orig,grid_name='taugrid',width_name='log_width2')
 
         else:
-            trace, a_poly_T, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp = polyNDgen(img_dir_orig, limlist=limlist, nlim=nlim, size=args.size,samples=args.samples,tune=args.tune,errmult=args.error_mult,errmultn=args.error_mult_n,plot=args.plot,extratext=args.extratext,degree=args.degree,sampling=args.steps,sigarr=sigarr,sigN=sigN,indep_true=indep_true,n=n,degree2=args.degree2,limlist2=limlist2,indep_true2=indep_true2,sigarr2=sigarr2,indep_name=indep_name,indep_name2=indep_name2,numtrials=20000,minibatch_size=200)
+            trace, a_poly_T, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp = polyNDgen(img_dir_orig, limlist=limlist, nlim=nlim, size=args.size,samples=args.samples,tune=args.tune,errmult=args.error_mult,errmultn=args.error_mult_n,plot=args.plot,extratext=args.extratext,degree=args.degree,sampling=args.steps,sigarr=sigarr,sigN=sigN,indep_true=indep_true,n=n,degree2=args.degree2,limlist2=limlist2,indep_true2=indep_true2,sigarr2=sigarr2,indep_name=indep_name,indep_name2=indep_name2,numtrials=20000)
 
             get_relevant_info_ND_Gen(trace, a_poly_T2, xx, xx2, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true2, indep_samp, indep_samp2, n_samp, med, med_mod, indep_name, indep_name2, indep_lab2, dep_name=dep_name, dep_lab=dep_lab, degree=args.degree,degree2=args.degree2,extratext=args.extratext,numsamp=500,img_dir_orig=img_dir_orig)
 
