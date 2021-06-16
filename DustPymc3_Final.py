@@ -192,7 +192,7 @@ def polyND_bivar(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extrat
     if n is None:
         np.random.seed(3890)
         ngrid_true = 0.9*rng*np.random.rand(xx[0].size)-0.9*rng/2.0 + avg #True values of dust parameter at the grid
-        taugrid_true = truncnorm.rvs(-0.3,3.7,loc=0.3,scale=1.0,size=xx[0].size) #True values of 2nd dust parameter at the grid
+        taugrid_true = truncnorm.rvs(0.0,4.0,loc=0.3,scale=1.0,size=xx[0].size) #True values of 2nd dust parameter at the grid
     # When "data" inputs provided, use measured n to determine approximate grid values for n according to Prospector
     else:
         ngrid_true, taugrid_true = np.zeros(xx[0].size), np.zeros(xx[0].size)
@@ -668,7 +668,7 @@ def plot1D(x,y,xx,yy,img_dir,name,xlab=r'$\log\ M_*$',ylab='Median model n',xerr
     ax.set_xlabel(xlab); ax.set_ylabel(ylab)
     fig.savefig(op.join(img_dir,'%s.png'%(name)),bbox_inches='tight',dpi=200)
 
-def plot_color_map(x,y,z,xdiv,ydiv,znum,xx,yy,img_dir,name,levels=10,xlab=r'$\log\ M_*$',ylab=r'$\log$ sSFR$_{\rm{100}}$',zlab='Median model n',cmap='viridis',xtrue=None,ytrue=None,xtrueerr=None,ytrueerr=None,minz=-100.0,maxz=100.0):
+def plot_color_map(x,y,z,xdiv,ydiv,znum,xx,yy,img_dir,name,levels=10,xlab=r'$\log\ M_*$',ylab=r'$\log$ sSFR$_{\rm{100}}$',zlab='Median model n',cmap='viridis',xtrue=None,ytrue=None,xtrueerr=None,ytrueerr=None,minz=-100.0,maxz=100.0,width_mean=None):
     """ Plot color map of z(x,y) and over-plot contours showing the number of sources 
     
     Parameters:
@@ -690,8 +690,13 @@ def plot_color_map(x,y,z,xdiv,ydiv,znum,xx,yy,img_dir,name,levels=10,xlab=r'$\lo
     """
     fig, ax = plt.subplots()
     ax.plot(xx,yy,'ro',markersize=6)
-    if cmap=='viridis': cf = ax.contourf(x,y,z,levels=levels,cmap=cmap,vmin=max(np.amin(z),minz),vmax=min(np.amax(z),maxz))
-    else: cf = ax.contourf(x,y,z,levels=levels,cmap=cmap,vmin=-1.0*np.amax(abs(z)),vmax=np.amax(abs(z)))
+    if cmap=='viridis': 
+        vmin, vmax = max(np.amin(z),minz), min(np.amax(z),maxz)
+        # if width_mean is not None: vmax = max(vmax,width_mean)
+        cf = ax.contourf(x,y,z,levels=levels,cmap=cmap,vmin=vmin,vmax=vmax)
+    else: 
+        vmin, vmax = -1.0*np.amax(abs(z)), np.amax(abs(z))
+        cf = ax.contourf(x,y,z,levels=levels,cmap=cmap,vmin=-1.0*np.amax(abs(z)),vmax=np.amax(abs(z)))
     xmin, xmax = np.amin(xx),np.amax(xx)
     ymin, ymax = np.amin(yy),np.amax(yy)
     if np.sum(znum)>2501:
@@ -711,7 +716,14 @@ def plot_color_map(x,y,z,xdiv,ydiv,znum,xx,yy,img_dir,name,levels=10,xlab=r'$\lo
     ax.set_ylabel(ylab)
     ax.set_xlim(np.amin(xx),np.amax(xx))
     ax.set_ylim(np.amin(yy),np.amax(yy))
-    fig.colorbar(cf,label=zlab)
+    cb = fig.colorbar(cf,label=zlab)
+    if width_mean is not None:
+        ticks = cb.get_ticks()
+        tick_labels = np.array([ "{:0.2f}".format(tk) for tk in ticks ])
+        ind_wm = np.searchsorted(ticks,width_mean)
+        ticks = np.insert(ticks,ind_wm,width_mean)
+        tick_labels = np.insert(tick_labels,ind_wm,'IW')
+        cb.set_ticks(ticks); cb.set_ticklabels(tick_labels)
     if np.sum(znum)>2501:
         fig.colorbar(cnum,label='Number of Galaxies')
     fig.savefig(op.join(img_dir,'%s.png'%(name)),bbox_inches='tight',dpi=300)
@@ -781,7 +793,10 @@ def plot_model_true(n_true,n_med,ngrid_true,ngrid_med,img_dir,name,n_err=None,wi
     plt.gca().set_xlim(xmin,xmax)
     plt.xlabel(xlab)
     plt.ylabel(ylab)
-    plt.legend(loc='best',frameon=False)
+    handles, labels = plt.gca().get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    plt.legend(by_label.values(), by_label.keys(),loc='best',frameon=False)
+    # plt.legend(loc='best',frameon=False)
     plt.savefig(op.join(img_dir,"%s.png"%(name)),bbox_inches='tight',dpi=150)
 
 def plot_percentile(n_sim,n_true,img_dir,name,testper=29,endper=97.5):
@@ -961,7 +976,7 @@ def get_relevant_info_ND_Gen(trace,a_poly_T2,xx_true,xx,ngrid_true,coefs_true,n_
 
             plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],stdmod/width_mean,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx[i].ravel()+med_arr[i],xx[j].ravel()+med_arr[j],img_dir,'ModErr_%s_%s_%s'%(dep_name,indep_name[i],indep_name[j])+extratext,levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='Model %s uncertainty / intrinsic width'%(dep_lab),xtrue=indep_true2[i]+med_arr[i],ytrue=indep_true2[j]+med_arr[j],xtrueerr=np.std(indep_samp2[i],axis=1),ytrueerr=np.std(indep_samp2[j],axis=1))
 
-def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep_name,indep_lab,dep_name='n',dep_lab='n',degree2=1,levels=10,extratext='',fine_grid=201,bins=20,img_dir_orig=op.join('DataTrue','NewTests'),grid_name='ngrid',width_name='log_width',numsamp=50,fl_stats=fl_fit_stats_univar,append_to_file=True):
+def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep_name,indep_lab,dep_name='n',dep_lab='n',degree2=1,levels=10,extratext='',fine_grid=201,bins=20,img_dir_orig=op.join('DataTrue','NewTests'),grid_name='ngrid',width_name='log_width',numsamp=50,fl_stats=fl_fit_stats_univar,append_to_file=True,correction=False,new_model_true=False):
     nlen, nwid = len(n_samp), len(n_samp[0])
     ndim2 = len(indep_samp)
     img_dir = op.join(img_dir_orig,'deg_%d'%(degree2),extratext)
@@ -975,43 +990,53 @@ def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep
     width_mean = np.exp(np.mean(log_width))
     all_std = np.std(ngrid,axis=0)
     coefs_med = np.linalg.lstsq(a_poly_T2,ngrid_med,None)[0]
-    n_med = calc_poly(indep_samp,coefs_med,degree2) + width_med * np.random.randn(nlen,nwid)
-    indep_avg = np.mean(indep_samp,axis=2)
+    n_med = calc_poly(indep_samp,coefs_med,degree2) # + width_med * np.random.randn(nlen,nwid)
+    # term = calc_poly_tt(indep_samp,degree2)
+    # aTinv = np.linalg.inv(a_poly_T2)
+    # coefs_med_v2 = np.dot(aTinv,ngrid_med)
+    # n_med_v2 = np.tensordot(coefs_med_v2,term,axes=1)
+    # indep_avg = np.mean(indep_samp,axis=2)
+    # breakpoint()
 
-    dataarr = np.empty((ngrid_med.size,0))
-    colnames = []
-    for i in range(len(xx)):
-        dataarr = np.append(dataarr,xx[i].reshape(ngrid_med.size,1),axis=1)
-        dataarr = np.append(dataarr,xx[i].reshape(ngrid_med.size,1)+med_arr[i],axis=1)
-        colnames.append(indep_name[i]); colnames.append(indep_name[i]+'_plus_med')
-    dataarr = np.append(dataarr,ngrid_med[:,None],axis=1); colnames.append('ngrid')
-    dataname = ''
-    for name in indep_name: dataname += name+'_'
-    if 'univar' in fl_stats: dataname+=dep_name
-    else: 
-        dataname+='n_dust2'
-        rho = np.array(getattr(trace.posterior,'rho'))
-        log_width2 = np.array(getattr(trace.posterior,'log_width2'))
-    # np.savetxt(op.join(img_dir,'ngrid_%s%s_%s_vi%d.dat'%(dataname,dep_name,extratext,var_inf)),dataarr,header='%s  ngrid'%('  '.join(indep_name)),fmt='%.5f')
-    t = Table(dataarr,names=colnames)
-    t.write(op.join(img_dir,'ngrid_%s_%s_HB.dat'%(dataname,extratext)),overwrite=True,format='ascii')
-    trace.to_netcdf(op.join(img_dir,'trace_%s_%s.nc'%(dataname,extratext)))
-    # pm.save_trace(trace,directory=img_dir)
-
-    rhat_arr = []
-    rhats = az.rhat(trace)
-    rhat_keys = list(rhats.keys())
-    for key in rhat_keys:
-        val = rhats[key].values
-        if val.ndim==0: rhat_arr+=[float(val)]
-        else: rhat_arr+=[max(val)]
-    num_div = len(trace.sample_stats.diverging.values.nonzero()[0])
-    print("rhat_keys:", rhat_keys)
-    rhat_argsort = np.argsort(rhat_keys)
     if append_to_file:
+        dataarr = np.empty((ngrid_med.size,0))
+        colnames = []
+        for i in range(len(xx)):
+            dataarr = np.append(dataarr,xx[i].reshape(ngrid_med.size,1),axis=1)
+            dataarr = np.append(dataarr,xx[i].reshape(ngrid_med.size,1)+med_arr[i],axis=1)
+            colnames.append(indep_name[i]); colnames.append(indep_name[i]+'_plus_med')
+        dataname = ''
+        for name in indep_name: dataname += name+'_'
+        if 'univar' in fl_stats: 
+            dataarr = np.append(dataarr,ngrid_med[:,None],axis=1); colnames.append(grid_name)
+            dataname+=dep_name
+        else: 
+            taugrid = np.array(getattr(trace.posterior,'taugrid'))
+            taugrid = taugrid.reshape(sh[0]*sh[1],sh[2])
+            taugrid_med = np.median(taugrid,axis=0)
+            dataarr = np.append(dataarr,ngrid_med[:,None],axis=1); colnames.append(grid_name)
+            dataarr = np.append(dataarr,taugrid_med[:,None],axis=1); colnames.append('taugrid')
+            dataname+='n_dust2'
+            rho = np.array(getattr(trace.posterior,'rho'))
+            log_width2 = np.array(getattr(trace.posterior,'log_width2'))
+        # np.savetxt(op.join(img_dir,'ngrid_%s%s_%s_vi%d.dat'%(dataname,dep_name,extratext,var_inf)),dataarr,header='%s  ngrid'%('  '.join(indep_name)),fmt='%.5f')
+        t = Table(dataarr,names=colnames)
+        t.write(op.join(img_dir,'ngrid_%s_%s_HB.dat'%(dataname,extratext)),overwrite=True,format='ascii')
+        if not correction: trace.to_netcdf(op.join(img_dir,'trace_%s_%s.nc'%(dataname,extratext)))
+        # pm.save_trace(trace,directory=img_dir)
+        rhat_arr = []
+        rhats = az.rhat(trace)
+        rhat_keys = list(rhats.keys())
+        for key in rhat_keys:
+            val = rhats[key].values
+            if val.ndim==0: rhat_arr+=[float(val)]
+            else: rhat_arr+=[max(val)]
+        num_div = len(trace.sample_stats.diverging.values.nonzero()[0])
+        print("rhat_keys:", rhat_keys)
+        rhat_argsort = np.argsort(rhat_keys)
         with open(fl_stats,'a') as fl:
             fl.write('%s_%s  '%(dataname, extratext))
-            fl.write(f'{nlen}  {nwid}  {len(log_width)}  ')
+            fl.write(f'{degree2}  {ndim2}  {nlen}  {nwid}  {len(log_width)}  {num_div}  ')
             for i_as in rhat_argsort: fl.write('%.4f  '%(rhat_arr[i_as]))
             if 'bivar' in fl_stats: fl.write('%.4f  %.4f  %.4f \n'%(np.log(width_med),np.median(log_width2),np.median(rho)))
             else: fl.write('%.4f \n'%(np.log(width_med)))
@@ -1030,7 +1055,11 @@ def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep
         n_sim[i] = calc_poly(indep_avg,coefs_mod,degree2) + width_mod * np.random.randn(*n_sim[i].shape)
     n_mean, n_err = np.mean(n_sim,axis=0), np.std(n_sim,axis=0)
 
-    plot_model_true(np.mean(n_samp,axis=1),n_mean,None,None,img_dir,'Real_n_comp_%s'%(extratext),n_err=n_err,width_true=np.std(n_samp,axis=1),ylab='Mean posterior model %s (at mean location)'%(dep_lab), xlab='Observed %s (Prospector posterior means)'%(dep_lab),ngrid_true_plot=False)
+    plot_model_true(np.mean(n_samp,axis=1),n_mean,None,None,img_dir,'Real_%s_comp_%s'%(dep_name,extratext),n_err=n_err,width_true=np.std(n_samp,axis=1),ylab='Mean posterior model %s (at mean location)'%(dep_lab), xlab='Observed %s (Prospector posterior means)'%(dep_lab),ngrid_true_plot=False)
+
+    # plot_model_true(n_samp,n_med,None,None,img_dir,'Real_%s_comp_%s_v2'%(dep_name,extratext),n_err=None,width_true=None,ylab='Mean posterior model %s (at mean location)'%(dep_lab), xlab='Observed %s (Prospector posterior means)'%(dep_lab),ngrid_true_plot=False)
+
+    if new_model_true: return
 
     if ndim2==1:
         x = np.linspace(np.amin(xx[0]),np.amax(xx[0]),fine_grid)
@@ -1088,7 +1117,7 @@ def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep
 
             plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],n_mean2,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx[i].ravel()+med_arr[i],xx[j].ravel()+med_arr[j],img_dir,'MeanModel_%s_%s_%s%s'%(dep_name,indep_name[i],indep_name[j],extratext),levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='Mean posterior model %s'%(dep_lab),xtrue=np.mean(indep_samp[i],axis=1)+med_arr[i],ytrue=np.mean(indep_samp[j],axis=1)+med_arr[j],xtrueerr=np.std(indep_samp[i],axis=1),ytrueerr=np.std(indep_samp[j],axis=1))
 
-            plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],n_err2/width_mean,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx[i].ravel()+med_arr[i],xx[j].ravel()+med_arr[j],img_dir,'ErrModel_%s_%s_%s%s'%(dep_name,indep_name[i],indep_name[j],extratext),levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='Model %s uncertainty / intrinsic width'%(dep_lab),xtrue=np.mean(indep_samp[i],axis=1)+med_arr[i],ytrue=np.mean(indep_samp[j],axis=1)+med_arr[j],xtrueerr=np.std(indep_samp[i],axis=1),ytrueerr=np.std(indep_samp[j],axis=1))
+            plot_color_map(xx_fine[i]+med_arr[i],xx_fine[j]+med_arr[j],n_err2,xx_div[0]+med_arr[i],xx_div[1]+med_arr[j],znum,xx[i].ravel()+med_arr[i],xx[j].ravel()+med_arr[j],img_dir,'ErrModel_%s_%s_%s%s'%(dep_name,indep_name[i],indep_name[j],extratext),levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='Model %s uncertainty'%(dep_lab),xtrue=np.mean(indep_samp[i],axis=1)+med_arr[i],ytrue=np.mean(indep_samp[j],axis=1)+med_arr[j],xtrueerr=np.std(indep_samp[i],axis=1),ytrueerr=np.std(indep_samp[j],axis=1),width_mean=width_mean)
 
 def create_prior(proplist,samplearr,zarr):
     proparr = ['ssfr', 'mwa', 'stmass', 'dust1', 'dust2', 'met']
@@ -1535,7 +1564,7 @@ def main(args=None):
 
             get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp[0],med_mod,indep_name2,indep_lab2,dep_dict['names']['n'],dep_dict['labels']['n'],degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,fl_stats=fl_fit_stats_bivar)
 
-            get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp[1],med_mod,indep_name2,indep_lab2,dep_dict['names']['tau2'],dep_dict['labels']['tau2'],degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,fl_stats=fl_fit_stats_bivar,append_to_file=False)
+            get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp[1],med_mod,indep_name2,indep_lab2,dep_dict['names']['tau2'],dep_dict['labels']['tau2'],degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,fl_stats=fl_fit_stats_bivar,append_to_file=False,grid_name='taugrid',width_name='log_width2')
 
         else:
             trace, a_poly_T, xx = polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,dep_lim=nlim,tune=args.tune,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,uniform=uniform)

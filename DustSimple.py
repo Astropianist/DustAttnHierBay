@@ -21,6 +21,8 @@ sns.set_style({"xtick.direction": "in","ytick.direction": "in",
                "ytick.major.size":12, "ytick.minor.size":4,
                })
 
+fl_lmfit = 'lmfit_stats.txt'
+
 def parse_args(argv=None):
     """ Tool to parse arguments from the command line. The entries should be self-explanatory """
     parser = ap.ArgumentParser(description="DustPymc3",
@@ -99,9 +101,9 @@ def plot2DDustMean(x,y,z,xplot,xname,yplot,yname,zplot,zname,binx=50,biny=50,ext
     plt.savefig(op.join(pathname,"SalimStyle_%s_%svs%s%s_binxy%d_minbin%d.png"%(zname,yname,xname,extratext,binx,min_bin)),bbox_inches='tight',dpi=300)
 
 def getData():
-    obj = pickle.load(open("3dhst_samples.pickle",'rb'))
-    logM, ssfr, logZ, z, tau1, tau2, n = np.log10(obj['stellar_mass'])[:,0], np.log10(obj['ssfr_100'])[:,0], obj['log_z_zsun'][:,0], obj['z'], obj['dust1'][:,0], obj['dust2'][:,0], obj['dust_index'][:,0]
-    inc, dq = np.loadtxt('GalfitParamsProsp.dat',usecols=(2,3),unpack=True)
+    obj = pickle.load(open("3dhst_samples_500_inc.pickle",'rb'))
+    logM, ssfr, logZ, z, tau1, tau2, n, inc = np.log10(obj['stellar_mass'])[:,0], np.log10(obj['ssfr_100'])[:,0], obj['log_z_zsun'][:,0], obj['z'], obj['dust1'][:,0], obj['dust2'][:,0], obj['dust_index'][:,0], obj['inc'][:,0]
+    dq = np.std(obj['inc'],axis=1)
     logMe = np.std(np.log10(obj['stellar_mass']),axis=1)
     ssfre = np.std(np.log10(obj['ssfr_100']),axis=1)
     logZe, ze = np.std(obj['log_z_zsun'],axis=1), 0.001*np.ones(len(z))
@@ -259,7 +261,7 @@ def pymc3_simple(indep,dep,img_dir_orig,degree=2,mindep=-1.0,maxdep=0.4,sampling
 
     return trace, xx, map_estimate
 
-def plot_lmfit(res,xx,indep,indep_err,dep,dep_err,indep_name,indep_lab,dep_name,dep_lab,med_arr,img_dir_orig=op.join('Simple','lmfit'),extratext='',fine_grid=201,bins=25,levels=15,mindep=-1.0,maxdep=0.4):
+def plot_lmfit(res,xx,indep,indep_err,dep,dep_err,indep_name,indep_lab,dep_name,dep_lab,med_arr,img_dir_orig=op.join('Simple','lmfit'),extratext='',fine_grid=201,bins=25,levels=15,mindep=-1.0,maxdep=0.4,fl_stats=fl_lmfit,save_res=True):
     # Extract initial information about best-fit model at original data points
     degree = len(xx[0])-1
     img_dir = op.join(img_dir_orig,'deg_%d'%(degree),extratext)
@@ -283,9 +285,15 @@ def plot_lmfit(res,xx,indep,indep_err,dep,dep_err,indep_name,indep_lab,dep_name,
     # header = '%s  ngrid'%('  '.join(indep_name))
     dataname = ''
     for name in indep_name: dataname += name+'_'
+    dataname += dep_name
     # np.savetxt(op.join(img_dir,'ngrid_%s%s_%s_lmfit.dat'%(dataname,dep_name,extratext)),dataarr,header=header,fmt='%.5f')
     t = Table(dataarr,names=colnames)
-    t.write(op.join(img_dir,'ngrid_%s%s_%s_lmfit.dat'%(dataname,dep_name,extratext)),overwrite=True,format='ascii')
+    t.write(op.join(img_dir,'ngrid_%s_%s_lmfit.dat'%(dataname,extratext)),overwrite=True,format='ascii')
+
+    with open(fl_stats,'a') as fl:
+        fl.write(f'{dataname}_{extratext}  {degree}  {ndim}  {len(dep)} \n')
+        fl.write(res.fit_report())
+        fl.write('\n \n')
 
     # Plot stuff!
     plot_model_true(dep,res.best_fit,None,None,img_dir,'Real_n_comp_%s_lmfit'%(extratext),n_err=res.eval_uncertainty(),width_true=dep_err,ngrid_true_plot=False,ylab='LMFIT model %s'%(dep_lab),xlab='Prospector Max L %s'%(dep_lab))
@@ -387,6 +395,7 @@ def plot_pymc3(trace,xx,indep,indep_err,dep,dep_err,indep_name,indep_lab,dep_nam
         coefs_mod_all[i] = coefs_mod
         n_sim[i] = calc_poly(indep,coefs_mod,degree) + width_mod * np.random.randn(*n_sim[i].shape)
     n_mean, n_err = np.mean(n_sim,axis=0), np.std(n_sim,axis=0)
+    # breakpoint()
 
     plot_model_true(dep,n_mean,None,None,img_dir,'Real_n_comp_%s_pm_simp'%(extratext),n_err=n_err,width_true=dep_err,ylab='Mean posterior model %s'%(dep_lab), xlab='Prospector Max L %s'%(dep_lab),ngrid_true_plot=False)
 
@@ -564,14 +573,14 @@ def main():
     #             else: cond = logM>0.0
     #             plot2DDustMean(i1[cond],indep[k][cond],d[cond],labels_indep[j],names_indep[j],labels_indep[k],names_indep[k],labels_dep[i],names_dep[i],extratext='full%d'%(bins),binx=bins,biny=bins,min_bin=min_bin)
     args = parse_args()
-    img_dir_orig = op.join('DataTrue',args.dir_orig,'lmfit')
+    img_dir_orig = op.join('DataTrue',args.dir_orig,'pm_simp')
     indep, indep_err, dep, dep_err, med_mod, z, uniform, indep_name, indep_lab, dep_name, dep_lab, nlim = getNecessaryData(args)
-    xx, res = make_lmfit(indep,dep,indep_name,args.degree,nlim[0],nlim[1])
-    plot_lmfit(res,xx,indep,indep_err,dep,dep_err,indep_name,indep_lab,dep_name,dep_lab,med_mod,img_dir_orig=img_dir_orig,extratext=args.extratext,mindep=nlim[0],maxdep=nlim[1])
+    # xx, res = make_lmfit(indep,dep,indep_name,args.degree,nlim[0],nlim[1])
+    # plot_lmfit(res,xx,indep,indep_err,dep,dep_err,indep_name,indep_lab,dep_name,dep_lab,med_mod,img_dir_orig=img_dir_orig,extratext=args.extratext,mindep=nlim[0],maxdep=nlim[1])
 
-    # trace, xx, map_estimate = pymc3_simple(indep,dep,img_dir_orig,degree=args.degree,mindep=nlim[0],maxdep=nlim[1],sampling=args.steps,tune=args.tune,uniform=uniform,extratext=args.extratext,plot=args.plot)
-    # plot_pymc3(trace,xx,indep,indep_err,dep,dep_err,indep_name,indep_lab,dep_name,dep_lab,med_mod,img_dir_orig=img_dir_orig,extratext=args.extratext,mindep=nlim[0],maxdep=nlim[1],map_estimate=map_estimate)
+    trace, xx, map_estimate = pymc3_simple(indep,dep,img_dir_orig,degree=args.degree,mindep=nlim[0],maxdep=nlim[1],sampling=args.steps,tune=args.tune,uniform=uniform,extratext=args.extratext,plot=args.plot)
+    plot_pymc3(trace,xx,indep,indep_err,dep,dep_err,indep_name,indep_lab,dep_name,dep_lab,med_mod,img_dir_orig=img_dir_orig,extratext=args.extratext,mindep=nlim[0],maxdep=nlim[1],map_estimate=map_estimate)
 
 if __name__ == '__main__':
-    # main()
-    lmfit_err_analysis()
+    main()
+    # lmfit_err_analysis()
