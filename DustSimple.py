@@ -45,6 +45,8 @@ def parse_args(argv=None):
     parser.add_argument('-d1','--d1',help='Whether or not to include birth cloud dust optical depth as independent variable in model',action='count',default=0)
     parser.add_argument('-d2','--d2',help='Whether or not to include diffuse dust optical depth as independent variable in model',action='count',default=0)
     parser.add_argument('-n','--n',help='Whether or not to use dust index as dependent variable',action='count',default=0)
+    parser.add_argument('-bv','--bivar',help='Whether or not to perform bivariate fitting',action='count',default=0)
+    parser.add_argument('-rd','--random',help='Whether or not to add random numbers to color plots',action='count',default=0)
 
     return parser.parse_args(args=argv)
 
@@ -58,47 +60,59 @@ def label_creation(args,prop_dict,dep_dict):
         dep_name, dep_lab, nlim = dep_dict['names']['n'], dep_dict['labels']['n'], np.array([-1.0,0.4])
     else:
         dep_name, dep_lab, nlim = dep_dict['names']['tau2'], dep_dict['labels']['tau2'], np.array([0.0,4.0])
+
+    if args.bivar: 
+        dep_name = [dep_dict['names']['n'],dep_dict['names']['tau2']]
+        dep_lab = [dep_dict['labels']['n'],dep_dict['labels']['tau2']]
+        nlim = [np.array([-1.0,0.4]),np.array([0.0,4.0])]
     return indep_name, indep_lab, dep_name, dep_lab, nlim
 
-def plot2DDustMean(x,y,z,xplot,xname,yplot,yname,zplot,zname,binx=50,biny=50,extratext='',levels=10,min_bin=1):
-    vmin=min(z)-0.001*abs(min(z))
+def plot2DDustMean(x,y,z,xplot,xname,yplot,yname,zplot,zname,binx=50,biny=50,extratext='',levels=10,min_bin=1,xe=None,ye=None,ze=None,numsamp=50,vmin=-1.0,vmax=0.4):
+    # vmin=min(z)-0.001*abs(min(z))
     xdiv = np.linspace(min(x),max(x)+1.0e-8,binx+1)
     ydiv = np.linspace(min(y),max(y)+1.0e-8,biny+1)
     xavg = np.linspace((xdiv[0]+xdiv[1])/2.0,(xdiv[-1]+xdiv[-2])/2.0,binx)
     yavg = np.linspace((ydiv[0]+ydiv[1])/2.0,(ydiv[-1]+ydiv[-2])/2.0,biny)
     zmean = np.empty((biny,binx)); znum = np.empty((biny,binx))
     zmean.fill(np.nan); znum.fill(np.nan)
-    # zmean = -99.0*np.ones((biny,binx))
+    if ze is not None:
+        zwe = np.empty((numsamp,z.size))
+        for i in range(numsamp):
+            zwe[i] = z + ze*np.random.randn(ze.size)
+        zwem = np.mean(zwe,axis=0)
+    else: zwem = z
     for j in range(biny):
         condj = np.logical_and(y>=ydiv[j],y<ydiv[j+1])
         for i in range(binx):
             condi = np.logical_and(x>=xdiv[i],x<xdiv[i+1])
             cond = np.logical_and(condi,condj)
-            if len(z[cond])>=min_bin:
+            if len(zwem[cond])>=min_bin:
                 # print(len(x[condi]),len(y[condj]),len(z[cond]))
-                zmean[j,i] = np.median(z[cond])
-                znum[j,i] = len(z[cond])
+                zmean[j,i] = np.median(zwem[cond])
+                znum[j,i] = len(zwem[cond])
     # print(zmean[-1,:])
     # print("Min of zmean:"); print(np.amin(zmean))
-    plt.figure()
+    fig, ax = plt.subplots()
     xx, yy = np.meshgrid(xavg,yavg)
     # print(xx.shape,len(xx[zmean>=vmin]))
-    cf = plt.contourf(xx,yy,zmean,levels=levels,cmap='viridis',vmin=vmin)
-    cnum = plt.contour(xx,yy,znum,levels=4,cmap='Greys')
+    cf = ax.contourf(xx,yy,zmean,levels=levels,cmap='viridis',vmin=vmin,vmax=vmax)
+    # cnum = plt.contour(xx,yy,znum,levels=4,cmap='Greys')
     # cf = plt.pcolormesh(xdiv,ydiv,zmean,cmap=my_cmap,vmin=vmin)
     minx,maxx = min(xx[zmean>=vmin]),max(xx[zmean>=vmin])
     miny,maxy = min(yy[zmean>=vmin]),max(yy[zmean>=vmin])
     # print(np.amin(yy),np.amax(yy))
     # print(minx,maxx,miny,maxy)
-    plt.gca().set_xlim([minx,maxx])
-    plt.gca().set_ylim([miny,maxy])
-    plt.xlabel(xplot)
-    plt.ylabel(yplot)
-    plt.colorbar(cf,label=zplot)
-    plt.colorbar(cnum,label='Number of Galaxies')
-    pathname = op.join("DataTrue","Simple",extratext,str(min_bin))
+    ax.set_xlim([minx,maxx])
+    ax.set_ylim([miny,maxy])
+    ax.set_xlabel(xplot)
+    ax.set_ylabel(yplot)
+    fig.colorbar(cf,label=zplot)
+    # fig.colorbar(cnum,label='Number of Galaxies')
+    ax.plot(x,y,'k,',alpha=0.8)
+    if xe is not None: ax.errorbar(x,y,yerr=ye,xerr=xe,fmt='none',ecolor='k',alpha=2/x.size)
+    pathname = op.join("DataTrue","Simplev2",extratext,str(min_bin))
     mkpath(pathname)
-    plt.savefig(op.join(pathname,"SalimStyle_%s_%svs%s%s_binxy%d_minbin%d.png"%(zname,yname,xname,extratext,binx,min_bin)),bbox_inches='tight',dpi=300)
+    plt.savefig(op.join(pathname,"%s_%svs%s%s_binxy%d_minbin%d.png"%(zname,yname,xname,extratext,binx,min_bin)),bbox_inches='tight',dpi=300)
 
 def getData():
     obj = pickle.load(open("3dhst_samples_500_inc.pickle",'rb'))
@@ -174,6 +188,7 @@ def getNecessaryData(args, logM=None, ssfr=None, logZ=None, z=None, tau1=None, t
         else: dep_err = None
         uniform = False
 
+    if args.bivar: dep = np.array([n[indfin],tau2[indfin]])
     indep_name, indep_lab, dep_name, dep_lab, nlim = label_creation(args,prop_dict,dep_dict)
 
     return indep, indep_err, dep, dep_err, med_mod, z[indfin], uniform, indep_name, indep_lab, dep_name, dep_lab, nlim
@@ -217,19 +232,20 @@ def make_lmfit(indep,dep,names,degree=2,mindep=-1.0,maxdep=0.4):
     # print(res.fit_report())
     return xx, res
 
-def pymc3_simple(indep,dep,img_dir_orig,degree=2,mindep=-1.0,maxdep=0.4,sampling=1000,tune=1000,uniform=True,extratext='',plot=True):
+def pymc3_simple(indep,dep,img_dir_orig,degree=2,mindep=-1.0,maxdep=0.4,sampling=1000,tune=1000,uniform=True,extratext='',plot=True,xx=None,make_me=True):
     img_dir = op.join(img_dir_orig,'deg_%d'%(degree),extratext)
     mkpath(img_dir)
     ndim = len(indep)
-    limlist = []
-    for indepi in indep:
-        per = np.percentile(indepi,[1.0,99.0])
-        limlist.append(per)
-    lower, upper = min(mindep,np.amin(dep)), max(maxdep,np.amax(dep)) # Limits for dependent variable
-    x = np.empty((0,degree+1)) # To set up grid on which true dust parameter n will be defined
-    for lim in limlist:
-        x = np.append(x,np.linspace(lim[0],lim[-1],degree+1)[None,:],axis=0)
-    xx = np.meshgrid(*x) #N-D Grid for polynomial computations
+    if xx is None:
+        limlist = []
+        for indepi in indep:
+            per = np.percentile(indepi,[1.0,99.0])
+            limlist.append(per)
+        # lower, upper = min(mindep,np.amin(dep)), max(maxdep,np.amax(dep)) # Limits for dependent variable
+        x = np.empty((0,degree+1)) # To set up grid on which true dust parameter n will be defined
+        for lim in limlist:
+            x = np.append(x,np.linspace(lim[0],lim[-1],degree+1)[None,:],axis=0)
+        xx = np.meshgrid(*x) #N-D Grid for polynomial computations
     a_poly_T = get_a_polynd(xx).T #Array related to grid that will be used in least-squares computation
     aTinv = np.linalg.inv(a_poly_T)
     rc = -1.0 #Rcond parameter set to -1 for keeping all entries of result to machine precision, regardless of rank issues
@@ -238,8 +254,8 @@ def pymc3_simple(indep,dep,img_dir_orig,degree=2,mindep=-1.0,maxdep=0.4,sampling
     # breakpoint()
     with pm.Model() as model:
         # Priors on the parameters ngrid (n over the grid) and sigma (related to width of relation)
-        if uniform: ngrid = pm.Uniform("ngrid",lower=lower-1.0e-5,upper=upper+1.0e-5,shape=xx[0].size,testval=np.random.uniform(lower,upper,xx[0].size))
-        else: ngrid = pm.TruncatedNormal("ngrid",mu=0.3,sigma=1.0,lower=lower-1.0e-5,upper=upper+1.0e-5,shape=xx[0].size,testval=np.random.uniform(lower,upper/2.0,xx[0].size))
+        if uniform: ngrid = pm.Uniform("ngrid",lower=mindep-1.0e-5,upper=maxdep+1.0e-5,shape=xx[0].size,testval=np.random.uniform(mindep,maxdep,xx[0].size))
+        else: ngrid = pm.TruncatedNormal("ngrid",mu=0.3,sigma=1.0,lower=mindep-1.0e-5,upper=maxdep+1.0e-5,shape=xx[0].size,testval=np.random.uniform(mindep,maxdep,xx[0].size))
         sigma = pm.HalfNormal("sigma", sigma=1)
     
         # Compute the expected n at each sample
@@ -249,8 +265,10 @@ def pymc3_simple(indep,dep,img_dir_orig,degree=2,mindep=-1.0,maxdep=0.4,sampling
         # Likelihood (sampling distribution) of observations
         dep_obs = pm.Normal("dep_obs", mu=mu, sigma=sigma, observed=dep)
 
-        map_estimate = pm.find_MAP()
-        print(map_estimate)
+        if make_me:
+            map_estimate = pm.find_MAP()
+            print(map_estimate)
+        else: map_estimate = None
 
         trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=True)
 
@@ -260,6 +278,50 @@ def pymc3_simple(indep,dep,img_dir_orig,degree=2,mindep=-1.0,maxdep=0.4,sampling
         print(az.summary(trace,round_to=2))
 
     return trace, xx, map_estimate
+
+def pymc3_simple_bivar(indep,n,tau,img_dir_orig,degree=2,nlim=np.array([-1.0,0.4]),taulim=np.array([0.0,4.0]),sampling=1000,tune=1000,uniform=True,extratext='',plot=True,xx=None):
+    img_dir = op.join(img_dir_orig,'deg_%d'%(degree),extratext)
+    mkpath(img_dir)
+    ndim = len(indep)
+    if xx is None:
+        limlist = []
+        for indepi in indep:
+            per = np.percentile(indepi,[1.0,99.0])
+            limlist.append(per)
+        x = np.empty((0,degree+1)) # To set up grid on which true dust parameter n will be defined
+        for lim in limlist:
+            x = np.append(x,np.linspace(lim[0],lim[-1],degree+1)[None,:],axis=0)
+        xx = np.meshgrid(*x) #N-D Grid for polynomial computations
+    a_poly_T = get_a_polynd(xx).T #Array related to grid that will be used in least-squares computation
+    aTinv = np.linalg.inv(a_poly_T)
+    rc = -1.0 #Rcond parameter set to -1 for keeping all entries of result to machine precision, regardless of rank issues
+    # 2-D array that will be multiplied by coefficients to calculate the dust parameter at the observed independent variable values
+    term = calc_poly_tt(indep,degree)
+    # breakpoint()
+    with pm.Model() as model:
+        # Priors on the parameters ngrid (n over the grid) and sigma (related to width of relation)
+        ngrid = pm.Uniform("ngrid",lower=nlim[0]-1.0e-5,upper=nlim[1]+1.0e-5,shape=xx[0].size,testval=np.random.uniform(nlim[0],nlim[1],xx[0].size))
+        taugrid = pm.TruncatedNormal("taugrid",mu=0.3,sigma=1.0,lower=taulim[0]-1.0e-5,upper=taulim[1]+1.0e-5,shape=xx[0].size,testval=np.random.uniform(taulim[0],taulim[1],xx[0].size))
+        sigma = pm.HalfNormal("sigma", sigma=0.2)
+        sigma2 = pm.HalfNormal("sigma2", sigma=0.2)
+        rho = pm.Uniform("rho",lower=-1.0,upper=1.0,testval=np.random.uniform(-0.5,0.5))
+    
+        # Compute the expected n at each sample
+        coefs = tt.dot(aTinv,ngrid)
+        coefs2 = tt.dot(aTinv,taugrid)
+        mu = tt.tensordot(coefs,term,axes=1)
+        mu2 = tt.tensordot(coefs2,term,axes=1)
+        zbiv = (n-mu)**2 / sigma**2 + (tau-mu2)**2 / sigma2**2 - 2 * rho * (n-mu) * (tau-mu2) / (sigma*sigma2)
+        logp = -0.5 * zbiv/(1.0-rho**2) - pm.math.log(sigma*sigma2*pm.math.sqrt(1-rho**2))
+        pm.Potential('logp',logp)
+        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=True)
+
+        if plot:
+            az.plot_trace(trace)
+            plt.savefig(op.join(img_dir,"polyND%s_trace_pm_simp_bivar.png"%(extratext)),bbox_inches='tight',dpi=300)
+        print(az.summary(trace,round_to=2))
+
+    return trace, xx
 
 def plot_lmfit(res,xx,indep,indep_err,dep,dep_err,indep_name,indep_lab,dep_name,dep_lab,med_arr,img_dir_orig=op.join('Simple','lmfit'),extratext='',fine_grid=201,bins=25,levels=15,mindep=-1.0,maxdep=0.4,fl_stats=fl_lmfit,save_res=True):
     # Extract initial information about best-fit model at original data points
@@ -554,24 +616,33 @@ def lmfit_err_analysis(fine_grid=201,bins=25,levels=15):
             plot_color_map(xx_fine[i]+med_mod[i],xx_fine[j]+med_mod[j],n_mean2,xx_div[0]+med_mod[i],xx_div[1]+med_mod[j],znum,xx[i].ravel()+med_mod[i],xx[j].ravel()+med_mod[j],img_dir,'MeanModel_%s_%s_%s%s_lmfit_err'%(dep_name,indep_name[i],indep_name[j],args.extratext),levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='LMFIT model %s'%(dep_lab),xtrue=indep[i]+med_mod[i],ytrue=indep[j]+med_mod[j],xtrueerr=indep_err[i],ytrueerr=indep_err[j],minz=nlim[0],maxz=nlim[-1])
             plot_color_map(xx_fine[i]+med_mod[i],xx_fine[j]+med_mod[j],n_err2,xx_div[0]+med_mod[i],xx_div[1]+med_mod[j],znum,xx[i].ravel()+med_mod[i],xx[j].ravel()+med_mod[j],img_dir,'ErrModel_%s_%s_%s%s_lmfit_err'%(dep_name,indep_name[i],indep_name[j],args.extratext),levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='LMFIT model uncertainty %s'%(dep_lab),xtrue=indep[i]+med_mod[i],ytrue=indep[j]+med_mod[j],xtrueerr=indep_err[i],ytrueerr=indep_err[j],minz=nlim[0],maxz=nlim[-1])
 
+def makeBinPlots(bins=25,min_bin=10,add_err=False):
+    logM, ssfr, logZ, z, tau1, tau2, n, inc, logMe, ssfre, logZe, ze, tau1e, tau2e, ne, dq = getData()
+    # indep = np.array([logM,ssfr,logZ,z,tau1,tau2,inc])
+    # indepe = np.array([logMe,ssfre,logZe,ze,tau1e,tau2e,dq])
+    indep = np.array([ssfr,logM])
+    indepe = np.array([ssfre,logMe])
+    dep = np.array([n,tau2])
+    depe = np.array([ne,tau2e])
+    # names_indep = ['logM','ssfr100','logZ','z','tau1','tau2','inc']
+    # labels_indep = [r'$\log M_*$',r'$\log$ sSFR$_{\rm{100}}$',r'$\log (Z/Z_\odot)$','z',r"$\hat{\tau}_{1}$",r"$\hat{\tau}_{2}$",'b/a']
+    names_indep = ['ssfr100','logM']
+    labels_indep = [r'$\log$ sSFR$_{\rm{100}}$',r'$\log M_*$']
+    names_dep = ['n','tau2']
+    labels_dep = ['n',r"$\hat{\tau}_{2}$"]
+    vmins = [-1.0,0.0]
+    vmaxs = [0.4,3.01]
+    for i,d in enumerate(dep):
+        for j,i1 in enumerate(indep):
+            for k in range(j+1,len(indep)):
+                if i==1 and (j==5 or k==5): continue
+                if k==6: cond = inc>=0.0
+                else: cond = logM>0.0
+                if add_err: xe, ye, ze = indepe[j][cond], indepe[k][cond], depe[i][cond]
+                else: xe, ye, ze = None, None, None
+                plot2DDustMean(i1[cond],indep[k][cond],d[cond],labels_indep[j],names_indep[j],labels_indep[k],names_indep[k],labels_dep[i],names_dep[i],extratext='full%d_ae%d'%(bins,add_err),binx=bins,biny=bins,min_bin=min_bin,xe=xe,ye=ye,ze=ze,vmin=vmins[i],vmax=vmaxs[i])
 
 def main():
-    # logM, ssfr, logZ, z, tau1, tau2, n, inc = getData()
-    # indep = np.array([logM,ssfr,logZ,z,tau1,tau2,inc])
-    # dep = np.array([n,tau2])
-    # names_indep = ['logM','ssfr100','logZ','z','tau1','tau2','inc']
-    # labels_indep = [r'$\log M_*$',r'$\log$ sSFR$_{\rm{100}}$',r'$\log (Z/Z_\odot)$','z',r"$\hat{\tau}_{\lambda,1}$",r"$\hat{\tau}_{\lambda,2}$",'b/a']
-    # names_dep = ['n','tau2']
-    # labels_dep = ['n',r"$\hat{\tau}_{\lambda,2}$"]
-    # bins = 100
-    # min_bin=1
-    # for i,d in enumerate(dep):
-    #     for j,i1 in enumerate(indep):
-    #         for k in range(j+1,len(indep)):
-    #             if i==1 and (j==5 or k==5): continue
-    #             if k==6: cond = inc>=0.0
-    #             else: cond = logM>0.0
-    #             plot2DDustMean(i1[cond],indep[k][cond],d[cond],labels_indep[j],names_indep[j],labels_indep[k],names_indep[k],labels_dep[i],names_dep[i],extratext='full%d'%(bins),binx=bins,biny=bins,min_bin=min_bin)
     args = parse_args()
     img_dir_orig = op.join('DataTrue',args.dir_orig,'pm_simp')
     indep, indep_err, dep, dep_err, med_mod, z, uniform, indep_name, indep_lab, dep_name, dep_lab, nlim = getNecessaryData(args)
@@ -582,5 +653,6 @@ def main():
     plot_pymc3(trace,xx,indep,indep_err,dep,dep_err,indep_name,indep_lab,dep_name,dep_lab,med_mod,img_dir_orig=img_dir_orig,extratext=args.extratext,mindep=nlim[0],maxdep=nlim[1],map_estimate=map_estimate)
 
 if __name__ == '__main__':
-    main()
+    # main()
     # lmfit_err_analysis()
+    makeBinPlots(bins=25,min_bin=10,add_err=False)

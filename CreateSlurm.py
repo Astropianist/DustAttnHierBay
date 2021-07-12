@@ -43,7 +43,7 @@ def main():
     f.write('#SBATCH -p genx -c 4 \n')
     f.write('#SBATCH --mem=%d \n'%(mem_MB))
     f.write('#SBATCH --mail-type=ALL \n')
-    f.write('#SBATCH --mail-user=gnagaraj@flatironinstitute.org \n')
+    f.write('#SBATCH --mail-user=gnagaraj-visitor@flatironinstitute.org \n')
     f.write('cd ${HOME}/ceph/DustAttn/ \n')
     f.write('module load slurm gcc lib/openblas \n')
     f.write('source ${HOME}/ceph/env/bin/activate \n')
