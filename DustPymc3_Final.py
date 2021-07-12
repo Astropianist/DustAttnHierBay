@@ -188,14 +188,15 @@ def polyND_bivar(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extrat
     a_poly_T = get_a_polynd(xx).T #Array related to grid that will be used in least-squares computation
     aTinv = np.linalg.inv(a_poly_T)
     rc = -1.0 #Rcond parameter set to -1 for keeping all entries of result to machine precision, regardless of rank issues
-    rng = nlim[1]-nlim[0]
-    rng2 = taulim[1]-taulim[0]
-    avg = (nlim[1]+nlim[0])/2.0
-    avg2 = (taulim[1]+taulim[0])/2.0
+    # rng = nlim[1]-nlim[0]
+    # rng2 = taulim[1]-taulim[0]
+    # avg = (nlim[1]+nlim[0])/2.0
+    # avg2 = (taulim[1]+taulim[0])/2.0
     if n is None:
         np.random.seed(3890)
-        ngrid_true = 0.9*rng*np.random.rand(xx[0].size)-0.9*rng/2.0 + avg #True values of dust parameter at the grid
-        taugrid_true = truncnorm.rvs(0.0,4.0,loc=0.3,scale=1.0,size=xx[0].size) #True values of 2nd dust parameter at the grid
+        # ngrid_true = 0.9*rng*np.random.rand(xx[0].size)-0.9*rng/2.0 + avg #True values of dust parameter at the grid
+        ngrid_true = np.random.uniform(nlim[0],nlim[1],xx[0].size)
+        taugrid_true = truncnorm.rvs(taulim[0],taulim[1],loc=0.3,scale=1.0,size=xx[0].size) #True values of 2nd dust parameter at the grid
     # When "data" inputs provided, use measured n to determine approximate grid values for n according to Prospector
     else:
         ngrid_true, taugrid_true = np.zeros(xx[0].size), np.zeros(xx[0].size)
@@ -233,8 +234,10 @@ def polyND_bivar(img_dir_orig,limlist=None,size=500,samples=50,plot=False,extrat
     # Pymc3 model creation
     with pm.Model() as model:
         # Priors on the parameters ngrid (n over the grid) and log_width (true width of relation)
-        ngrid = pm.Uniform("ngrid",lower=nlim[0]-1.0e-5,upper=nlim[1]+1.0e-5,shape=ngrid_true.size,testval=0.9*rng*np.random.rand(ngrid_true.size)-0.9*rng/2.0 + avg)
-        taugrid = pm.TruncatedNormal("taugrid",mu=0.3,sigma=1.0,lower=taulim[0]-1.0e-5,upper=taulim[1]+1.0e-5,shape=taugrid_true.size,testval=0.9*rng2*np.random.rand(taugrid_true.size)-0.9*rng2/2.0 + avg2)
+        ngrid = pm.Uniform("ngrid",lower=nlim[0]-width_true,upper=nlim[1]+width_true,shape=ngrid_true.size,testval=np.random.uniform(nlim[0],nlim[1],ngrid_true.size))
+        # 0.9*rng*np.random.rand(ngrid_true.size)-0.9*rng/2.0 + avg
+        taugrid = pm.TruncatedNormal("taugrid",mu=0.3,sigma=1.0,lower=taulim[0]-width_true2,upper=taulim[1]+width_true2,shape=taugrid_true.size,testval=np.random.uniform(taulim[0],taulim[1],taugrid_true.size))
+        # 0.9*rng2*np.random.rand(taugrid_true.size)-0.9*rng2/2.0 + avg2
         # log_width = pm.StudentT("log_width", nu=5, mu=np.log(width_true), lam=0.5, testval=-5.0)
         log_width = pm.Uniform("log_width",lower=np.log(width_true)-1.0,upper=np.log(width_true)+1.0,testval=np.log(width_true)+0.5*np.random.rand()-0.25)
         log_width2 = pm.Uniform("log_width2",lower=np.log(width_true2)-1.0,upper=np.log(width_true2)+1.0,testval=np.log(width_true2)+0.5*np.random.rand()-0.25)
@@ -1599,7 +1602,7 @@ def main(args=None):
         indep_true, med, n, limlist, indep_true2, med_mod, limlist2 = data_simulation(args,prop_dict)
 
         if args.bivar:
-            trace, a_poly_T, xx, ngrid_true, taugrid_true, coefs_true, coefs_true2, n_true, tau_true, width_true, width_true2, rho_true, indep_true, indep_samp, n_samp, tau_samp = polyND_bivar(img_dir_orig, limlist=limlist, nlim=nlim, size=args.size,samples=args.samples,tune=args.tune,errmult=args.error_mult,errmultn=args.error_mult_n,errmultt=args.error_mult_t,errmultcross=args.error_mult_cross,plot=args.plot,extratext=args.extratext,degree=args.degree,sampling=args.steps,sigarr=sigarr,sigN=dep_dict['sigma']['n'],sigT=dep_dict['sigma']['tau2'],indep_true=indep_true,n=None,tau=None)
+            trace, a_poly_T, xx, ngrid_true, taugrid_true, coefs_true, coefs_true2, n_true, tau_true, width_true, width_true2, rho_true, indep_true, indep_samp, n_samp, tau_samp = polyND_bivar(img_dir_orig, limlist=limlist, size=args.size,samples=args.samples,tune=args.tune,errmult=args.error_mult,errmultn=args.error_mult_n,errmultt=args.error_mult_t,errmultcross=args.error_mult_cross,plot=args.plot,extratext=args.extratext,degree=args.degree,sampling=args.steps,sigarr=sigarr,sigN=dep_dict['sigma']['n'],sigT=dep_dict['sigma']['tau2'],indep_true=indep_true,n=None,tau=None)
     
             get_relevant_info_ND_Gen(trace, a_poly_T, xx, xx, ngrid_true, coefs_true, n_true, width_true, indep_true, indep_true, indep_samp, indep_samp, n_samp, med, med, indep_name, indep_name, indep_lab, dep_name=dep_dict['names']['n'], dep_lab=dep_dict['labels']['n'], degree=args.degree, degree2=args.degree, extratext=args.extratext, numsamp=500, img_dir_orig=img_dir_orig, bivar=args.bivar)
 
