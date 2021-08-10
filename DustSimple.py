@@ -39,6 +39,7 @@ def parse_args(argv=None):
 
     parser.add_argument('-m','--logM',help='Whether or not to include stellar mass (true)',action='count',default=0)
     parser.add_argument('-s','--ssfr',help='Whether or not to include sSFR (true)',action='count',default=0)
+    parser.add_argument('-sfr','--sfr',help='Whether or not to include SFR (true)',action='count',default=0)
     parser.add_argument('-logZ','--logZ',help='Whether or not to include metallicity (true)',action='count',default=0)
     parser.add_argument('-z','--z',help='Whether or not to include redshift (true)',action='count',default=0)
     parser.add_argument('-i','--i',help='Whether or not to include inclination in model',action='count',default=0)
@@ -116,10 +117,11 @@ def plot2DDustMean(x,y,z,xplot,xname,yplot,yname,zplot,zname,binx=50,biny=50,ext
 
 def getData():
     obj = pickle.load(open("3dhst_samples_500_inc.pickle",'rb'))
-    logM, ssfr, logZ, z, tau1, tau2, n, inc = np.log10(obj['stellar_mass'])[:,0], np.log10(obj['ssfr_100'])[:,0], obj['log_z_zsun'][:,0], obj['z'], obj['dust1'][:,0], obj['dust2'][:,0], obj['dust_index'][:,0], obj['inc'][:,0]
+    logM, ssfr, sfr, logZ, z, tau1, tau2, n, inc = np.log10(obj['stellar_mass'])[:,0], np.log10(obj['ssfr_100'])[:,0], log10(obj['ssfr_100'])[:,0], obj['log_z_zsun'][:,0], obj['z'], obj['dust1'][:,0], obj['dust2'][:,0], obj['dust_index'][:,0], obj['inc'][:,0]
     dq = np.std(obj['inc'],axis=1)
     logMe = np.std(np.log10(obj['stellar_mass']),axis=1)
     ssfre = np.std(np.log10(obj['ssfr_100']),axis=1)
+    sfre = np.std(np.log10(obj['sfr_100']),axis=1)
     logZe, ze = np.std(obj['log_z_zsun'],axis=1), 0.001*np.ones(len(z))
     tau1e, tau2e = np.std(obj['dust1'],axis=1), np.std(obj['dust2'],axis=1)
     ne = np.std(obj['dust_index'],axis=1)
@@ -128,10 +130,10 @@ def getData():
     masscomp = mass_completeness(z)
     cond = np.logical_and.reduce((logM>=masscomp,ssfr>=-12.5))
     ind = np.where(cond)[0]
-    return logM[ind], ssfr[ind], logZ[ind], z[ind], tau1[ind], tau2[ind], n[ind], inc[ind], logMe[ind], ssfre[ind], logZe[ind], ze[ind], tau1e[ind], tau2e[ind], ne[ind], dq[ind]
+    return logM[ind], ssfr[ind], sfr[ind], logZ[ind], z[ind], tau1[ind], tau2[ind], n[ind], inc[ind], logMe[ind], ssfre[ind], sfre[ind], logZe[ind], ze[ind], tau1e[ind], tau2e[ind], ne[ind], dq[ind]
 
-def getNecessaryData(args, logM=None, ssfr=None, logZ=None, z=None, tau1=None, tau2=None, n=None, inc=None, logMe=None, ssfre=None, logZe=None, ze=None, tau1e=None, tau2e=None, ne=None, dq=None):
-    if logM is None: logM, ssfr, logZ, z, tau1, tau2, n, inc, logMe, ssfre, logZe, ze, tau1e, tau2e, ne, dq = getData()
+def getNecessaryData(args, logM=None, ssfr=None, sfr=None, logZ=None, z=None, tau1=None, tau2=None, n=None, inc=None, logMe=None, ssfre=None, sfre=None, logZe=None, ze=None, tau1e=None, tau2e=None, ne=None, dq=None):
+    if logM is None: logM, ssfr, sfr, logZ, z, tau1, tau2, n, inc, logMe, ssfre, sfre, logZe, ze, tau1e, tau2e, ne, dq = getData()
     prop_dict, dep_dict = make_prop_dict()
     if args.i: cond = inc>=0
     else: cond = logM>=0
@@ -151,6 +153,11 @@ def getNecessaryData(args, logM=None, ssfr=None, logZ=None, z=None, tau1=None, t
         md = np.median(ssfr[indfin])
         indep = np.append(indep,ssfr[indfin][None,:]-md,axis=0)
         if logMe is not None: indep_err = np.append(indep_err,ssfre[indfin][None,:],axis=0)
+        med_mod = np.append(med_mod,md)
+    if args.sfr: 
+        md = np.median(sfr[indfin])
+        indep = np.append(indep,sfr[indfin][None,:]-md,axis=0)
+        if logMe is not None: indep_err = np.append(indep_err,sfre[indfin][None,:],axis=0)
         med_mod = np.append(med_mod,md)
     if args.logZ: 
         md = np.median(logZ[indfin])
@@ -523,6 +530,7 @@ def lmfit_err_analysis(fine_grid=201,bins=25,levels=15):
     obj = pickle.load(open("3dhst_resample_500_inc.pickle",'rb'))
     logMe = np.std(np.log10(obj['stellar_mass']),axis=1)
     ssfre = np.std(np.log10(obj['ssfr_100']),axis=1)
+    sfre = np.std(np.log10(obj['sfr_100']),axis=1)
     logZe, ze = np.std(obj['log_z_zsun'],axis=1), 0.001*np.ones(len(logMe))
     tau1e, tau2e = np.std(obj['dust1'],axis=1), np.std(obj['dust2'],axis=1)
     ne, ince = np.std(obj['dust_index'],axis=1), np.std(obj['inc'],axis=1)
@@ -530,11 +538,11 @@ def lmfit_err_analysis(fine_grid=201,bins=25,levels=15):
     # indep_all, dep_all, best_fit_all, best_unc, xx_all = [], [], [], [], []
     coefs_all = []
     for i, ri in enumerate(rand_inds):
-        logM, ssfr, logZ, z, tau1, tau2, n, inc = np.log10(obj['stellar_mass'])[:,ri], np.log10(obj['ssfr_100'])[:,ri], obj['log_z_zsun'][:,ri], obj['z'], obj['dust1'][:,ri], obj['dust2'][:,ri], obj['dust_index'][:,ri], obj['inc'][:,ri]
+        logM, ssfr, sfr, logZ, z, tau1, tau2, n, inc = np.log10(obj['stellar_mass'])[:,ri], np.log10(obj['ssfr_100'])[:,ri], np.log10(obj['sfr_100'])[:,ri], obj['log_z_zsun'][:,ri], obj['z'], obj['dust1'][:,ri], obj['dust2'][:,ri], obj['dust_index'][:,ri], obj['inc'][:,ri]
         masscomp = mass_completeness(z)
         cond = np.logical_and.reduce((logM>=masscomp,ssfr>=-12.5))
         ind = np.where(cond)[0]
-        indep, indep_err, dep, dep_err, med_mod, z, uniform, indep_name, indep_lab, dep_name, dep_lab, nlim = getNecessaryData(args,logM[ind], ssfr[ind], logZ[ind], z[ind], tau1[ind], tau2[ind], n[ind], inc[ind], logMe[ind], ssfre[ind], logZe[ind], ze[ind], tau1e[ind], tau2e[ind], ne[ind], ince[ind])
+        indep, indep_err, dep, dep_err, med_mod, z, uniform, indep_name, indep_lab, dep_name, dep_lab, nlim = getNecessaryData(args,logM[ind], ssfr[ind], sfr[ind], logZ[ind], z[ind], tau1[ind], tau2[ind], n[ind], inc[ind], logMe[ind], ssfre[ind], sfre[ind], logZe[ind], ze[ind], tau1e[ind], tau2e[ind], ne[ind], ince[ind])
         # indep_all.append(np.array([indep[i]+med_mod[i] for i in range(len(indep))]))
         # dep_all.append(dep)
         xx, res = make_lmfit(indep,dep,indep_name,args.degree,nlim[0],nlim[1])
@@ -617,7 +625,7 @@ def lmfit_err_analysis(fine_grid=201,bins=25,levels=15):
             plot_color_map(xx_fine[i]+med_mod[i],xx_fine[j]+med_mod[j],n_err2,xx_div[0]+med_mod[i],xx_div[1]+med_mod[j],znum,xx[i].ravel()+med_mod[i],xx[j].ravel()+med_mod[j],img_dir,'ErrModel_%s_%s_%s%s_lmfit_err'%(dep_name,indep_name[i],indep_name[j],args.extratext),levels=levels,xlab=indep_lab[i],ylab=indep_lab[j],zlab='LMFIT model uncertainty %s'%(dep_lab),xtrue=indep[i]+med_mod[i],ytrue=indep[j]+med_mod[j],xtrueerr=indep_err[i],ytrueerr=indep_err[j],minz=nlim[0],maxz=nlim[-1])
 
 def makeBinPlots(bins=25,min_bin=10,add_err=False):
-    logM, ssfr, logZ, z, tau1, tau2, n, inc, logMe, ssfre, logZe, ze, tau1e, tau2e, ne, dq = getData()
+    logM, ssfr, sfr, logZ, z, tau1, tau2, n, inc, logMe, ssfre, sfre, logZe, ze, tau1e, tau2e, ne, dq = getData()
     # indep = np.array([logM,ssfr,logZ,z,tau1,tau2,inc])
     # indepe = np.array([logMe,ssfre,logZe,ze,tau1e,tau2e,dq])
     indep = np.array([ssfr,logM])

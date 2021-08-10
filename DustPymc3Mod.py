@@ -15,20 +15,18 @@ import theano.tensor as tt
 from distutils.dir_util import mkpath
 import os.path as op
 from anchor_points import get_a_polynd, calc_poly, calc_poly_tt, polyfitnd, calc_poly_tt_vi
-from PlotColorMapProj import makeColorMapProj, getModelSamples
-import DustAttnCurveModules as dac
+from PlotColorMapProj import make2DGrid, makeColorMapProj, projPlot, getModelSamplesCD, getModelSamples
 import argparse as ap
 from scipy.stats import norm, truncnorm
 from scipy.integrate import trapz
 from copy import copy, deepcopy
-from scipy.interpolate import LinearNDInterpolator, interp1d
+from scipy.interpolate import LinearNDInterpolator
 from sklearn.neighbors import KernelDensity
 from sklearn.model_selection import GridSearchCV
 from multiprocessing import Pool
 from itertools import product
 from astropy.table import Table
 import corner
-from sedpy.attenuation import noll
 
 sns.set_context("paper") # options include: talk, poster, paper
 sns.set_style("ticks")
@@ -42,8 +40,11 @@ min_pdf = 1.0e-15
 ssfr_lim_prior = -15.0
 ssfr_lims_data = (-14.5,-7.0)
 cores = 4
-fl_fit_stats_univar = 'run_convergence_univar.txt'
-fl_fit_stats_bivar = 'run_convergence_bivar_joint_pr_sig.txt'
+fl_fit_stats_univar = 'run_convergence_univar_new.txt'
+fl_fit_stats_bivar = 'run_convergence_bivar_new.txt'
+fl_fit_stats_univar_CD = 'run_convergence_univar_CD.txt'
+fl_fit_stats_bivar_CD = 'run_convergence_bivar_CD.txt'
+fig_size = (12,5)
 nlab, taulab = 'n', r"$\hat{\tau}_{2}$"
 
 def mass_completeness(zred):
@@ -57,41 +58,6 @@ def mass_completeness(zred):
     mcomp = np.interp(zred, zref, mcomp_prosp)
 
     return mcomp
-
-def get_dust_attn_curve_d2(wave,n=0.0,d2=1.0):
-    Eb = 0.85 - 1.9*n
-    return noll(wave,tau_v=d2,delta=n,c_r=0.0,Ebump=Eb)
-
-def get_dust_attn_curve_d1(wave,d1=1.0):
-    return d1*(wave/5500.0)**(-1)
-
-def nvchev(tau_v):
-    return 2.8/(1.0 + 3.0*np.sqrt(tau_v))
-
-def bchev(tau_v):
-    return 0.3 - 0.05*tau_v
-
-def nlamchev(lam,tau_v):
-    return nvchev(tau_v) + bchev(tau_v)*(lam-0.55)
-
-def taulamchev(lam,tau_v):
-    return tau_v * (lam/0.55)**(-nlamchev(lam,tau_v))
-
-def getChevFunc():
-    tau_v_arr = np.linspace(1.0e-5,5.0,10001)
-    nvsS = getnvsS()
-    Schev = taulamchev(0.15,tau_v_arr)/taulamchev(0.55,tau_v_arr)
-    nchev = nvsS(Schev)
-    return interp1d(tau_v_arr, nchev, bounds_error=None, fill_value='extrapolate')
-    
-def getnvsS():
-    wvs = np.array([1500.,5500.])
-    narr = np.linspace(-2.0,2.0,4001)
-    Sarr = np.zeros_like(narr)
-    for i, n in enumerate(narr):
-        d21500, d25500 = get_dust_attn_curve_d2(wvs,n)
-        Sarr[i] = d21500/d25500
-    return interp1d(Sarr, narr)
 
 def parse_args(argv=None):
     """ Tool to parse arguments from the command line. The entries should be self-explanatory """
@@ -108,14 +74,15 @@ def parse_args(argv=None):
     parser.add_argument('-st','--steps',help='Number of desired steps included per chain',type=int,default=1000)
     parser.add_argument('-ext','--extratext',help='Extra text to help distinguish particular run',type=str,default='')
     parser.add_argument('-dg','--degree',help='Degree of polynomial (true)',type=int,default=2)
+    parser.add_argument('-od','--order',help='Order of polynomial (true)',type=int,default=4)
     parser.add_argument('-dg2','--degree2',help='Degree of polynomial (model)',type=int,default=2)
+    parser.add_argument('-od2','--order2',help='Order of polynomial (model)',type=int,default=4)
     parser.add_argument('-data','--data',help='To use data locations or not',action='count',default=0)
     parser.add_argument('-r','--real',help='Real data or simulation',action='count',default=0)
     parser.add_argument('-dir','--dir_orig',help='Parent directory for files',type=str,default='NewTests')
 
     parser.add_argument('-m','--logM',help='Whether or not to include stellar mass (true)',action='count',default=0)
     parser.add_argument('-s','--ssfr',help='Whether or not to include sSFR (true)',action='count',default=0)
-    parser.add_argument('-sfr','--sfr',help='Whether or not to include SFR (true)',action='count',default=0)
     parser.add_argument('-logZ','--logZ',help='Whether or not to include metallicity (true)',action='count',default=0)
     parser.add_argument('-z','--z',help='Whether or not to include redshift (true)',action='count',default=0)
     parser.add_argument('-i','--i',help='Whether or not to include inclination in model',action='count',default=0)
@@ -123,7 +90,6 @@ def parse_args(argv=None):
     parser.add_argument('-d2','--d2',help='Whether or not to include diffuse dust optical depth as independent variable in model',action='count',default=0)
     parser.add_argument('-mm','--logM_mod',help='Whether or not to include stellar mass in model',action='count',default=0)
     parser.add_argument('-sm','--ssfr_mod',help='Whether or not to include sSFR in model',action='count',default=0)
-    parser.add_argument('-sfrm','--sfr_mod',help='Whether or not to include SFR in model',action='count',default=0)
     parser.add_argument('-logZm','--logZ_mod',help='Whether or not to include metallicity in model',action='count',default=0)
     parser.add_argument('-zm','--z_mod',help='Whether or not to include redshift in model',action='count',default=0)
     parser.add_argument('-im','--i_mod',help='Whether or not to include inclination in model',action='count',default=0)
@@ -132,17 +98,23 @@ def parse_args(argv=None):
     parser.add_argument('-n','--n',help='Whether or not to use dust index as dependent variable',action='count',default=0)
     parser.add_argument('-bv','--bivar',help='Whether or not to perform bivariate fitting',action='count',default=0)
     parser.add_argument('-rd','--random',help='Whether or not to add random numbers to color plots',action='count',default=0)
-    parser.add_argument('-ad','--already_done',help='Whether fit was already finished',action='count',default=0)
+    parser.add_argument('-cd','--coef_direct',help='Whether or not to directly use polynomial coefficients (with the possibility of a max order)',action='count',default=0)
 
     args = parser.parse_args(args=argv)
     if not args.n: args.d2_mod = 0
     if args.real: 
-        if args.bivar: args.dir_orig = 'Bivar_Prior_Sig'
-            # if args.size==-1: args.dir_orig = 'Bivar_Full'
-            # else: args.dir_orig = 'Bivar_Sample'
+        if args.bivar:
+            if args.coef_direct: 
+                args.dir_orig = op.join('CoefDirect','Bivar')
+            else:
+                if args.size==-1: args.dir_orig = 'Bivar_Full'
+                else: args.dir_orig = 'Bivar_Sample'
         else:
-            if args.size==-1: args.dir_orig = 'Full'
-            else: args.dir_orig = 'NewTests'
+            if args.coef_direct:
+                args.dir_orig = op.join('CoefDirect','Univar')
+            else:
+                if args.size==-1: args.dir_orig = 'Full'
+                else: args.dir_orig = 'NewTests'
     else: 
         if args.bivar: args.dir_orig = 'Bivar'
         else: args.dir_orig = 'PolyGen'
@@ -607,7 +579,7 @@ def polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,plot=False,extratext=
 
     return trace, a_poly_T, xx
 
-def polyNDDataBivar(indep_samp,n_samp,tau_samp,logp_prior,img_dir_orig,plot=False,extratext='',degree=2,sampling=1000,tune=1000,nlim=np.array([-1.0,0.4]),taulim=np.array([0.0,4.0])):
+def polyNDDataCD(indep_samp,dep_samp,logp_prior,img_dir_orig,plot=False,extratext='',degree=2,order=4,sampling=1000,tune=1000,dep_lim=np.array([-1.0,0.4]),uniform=True):
     ''' Simulation of data where the dust index n is a 2-D polynomial function of stellar mass and sSFR.
 
     Parameters
@@ -642,52 +614,33 @@ def polyNDDataBivar(indep_samp,n_samp,tau_samp,logp_prior,img_dir_orig,plot=Fals
     The function runs the pymc3 sampler on the Prospector data and prints the results; an arviz plot of the results is also made if plot==True
     '''
     # We create a directory for each run, seperated by polynomial degree (and the run-specific text)
+    if uniform: dep_name = 'n'
+    else: dep_name = 'd2'
     img_dir = op.join(img_dir_orig,'deg_%d'%(degree),extratext)
     mkpath(img_dir)
     ndim = len(indep_samp)
-    limlist = []
-    for indep in indep_samp:
-        per = np.percentile(indep,[1.0,99.0])
-        # limlist.append(np.array([np.amin(indep),np.amax(indep)]))
-        limlist.append(per)
-    x = np.empty((0,degree+1)) # To set up grid on which true dust parameter n will be defined
-    for lim in limlist:
-        x = np.append(x,np.linspace(lim[0],lim[-1],degree+1)[None,:],axis=0)
-    xx = np.meshgrid(*x) #N-D Grid for polynomial computations
-    a_poly_T = get_a_polynd(xx).T #Array related to grid that will be used in least-squares computation
-    aTinv = np.linalg.inv(a_poly_T)
-    rc = -1.0 #Rcond parameter set to -1 for keeping all entries of result to machine precision, regardless of rank issues
-    # nchev = getChevFunc()
-    # nchev_tt = pm.distributions.dist_math.SplineWrapper(nchev)
-    # 3-D array that will be multiplied by coefficients to calculate the dust parameter at the observed independent variable values
+    sh = tuple(np.repeat(degree+1,len(indep_samp)))
+    totlen = np.prod(sh)
+    ind_just_right, tot_just_right = [], 0
+    for index, i in enumerate(np.ndindex(sh)):
+        if sum(i)<=order: 
+            ind_just_right.append(index)
+            tot_just_right+=1
     term = calc_poly_tt(indep_samp,degree)
-    # breakpoint()
     # Pymc3 model creation
     with pm.Model() as model:
         # Priors on the parameters ngrid (n over the grid) and log_width (true width of relation)
-        a = pm.Beta("a",alpha=0.5,beta=0.5)
-        # ngrid = pm.Uniform("ngrid",lower=nlim[0]-1.0e-5,upper=nlim[1]+1.0e-5,shape=xx[0].size,testval=np.random.uniform(nlim[0],nlim[1],xx[0].size))
-        taugrid = pm.TruncatedNormal("taugrid",mu=0.3,sigma=1.0,lower=taulim[0]-1.0e-5,upper=taulim[1]+1.0e-5,shape=xx[0].size,testval=np.random.uniform(taulim[0],taulim[1]/2.0,xx[0].size))
-        mu_n = a*(0.9487*tt.log10(tt.log10(2.6119*taugrid+1.0108))+0.3553)
-        # sig_n = 3.0/(29.0*a+1)
-        sig_n = pm.InverseGamma("sig_n",alpha=5,beta=0.5,testval=0.05)
-        # mu_n = pm.Deterministic("mu_n",a*(0.9487*tt.log10(tt.log10(2.6119*taugrid+1.0108))+0.3553))
-        # sig_n = pm.Deterministic("sig_n",3.0/(29.0*a+1))
-        ngrid = pm.TruncatedNormal("ngrid",mu=mu_n,sigma=sig_n,lower=nlim[0],upper=nlim[1],shape=xx[0].size)
-        log_width = pm.StudentT("log_width", nu=5, mu=-3.0, lam=0.5, testval=-3.5)
-        log_width2 = pm.StudentT("log_width2", nu=5, mu=-2.9, lam=0.48, testval=-3.8)
-        rho = pm.Uniform("rho",lower=-1.0,upper=1.0,testval=np.random.uniform(-0.5,0.5))
+        ncoef = pm.Uniform("ncoef",lower=-5.0,upper=5.0,shape=tot_just_right,testval=np.random.uniform(-1.0,1.0,tot_just_right))
+        log_width = pm.StudentT("log_width", nu=5, mu=-3.0, sigma=0.5, testval=-3.5)
+        # log_width = pm.Uniform("log_width",lower=-7.0,upper=-5.0,testval=-6.0)
 
         # Compute the expected n at each sample
-        coefs = tt.dot(aTinv,ngrid)
-        coefs2 = tt.dot(aTinv,taugrid)
+        coefs_orig = tt.zeros(totlen)
+        coefs = tt.set_subtensor(coefs_orig[ind_just_right],ncoef)
         mu = tt.tensordot(coefs,term,axes=1)
-        mu2 = tt.tensordot(coefs2,term,axes=1)
 
-        # The line has some width: we're calling it a Gaussian in n,tau
-        zbiv = (n_samp-mu)**2 * pm.math.exp(-2*log_width) + (tau_samp-mu2)**2 * pm.math.exp(-2*log_width2) - 2 * rho * (n_samp-mu) * (tau_samp-mu2) * pm.math.exp(-log_width-log_width2)
-
-        logp = -0.5 * zbiv/(1.0-rho**2) - log_width - log_width2 - pm.math.log(pm.math.sqrt(1-rho**2)) - logp_prior
+        # The line has some width: we're calling it a Gaussian in n
+        logp = -0.5 * (dep_samp - mu) ** 2 * pm.math.exp(-2*log_width) - log_width - logp_prior
 
         # Compute the marginalized likelihood
         max_logp = tt.max(logp, axis=1)
@@ -703,19 +656,19 @@ def polyNDDataBivar(indep_samp,n_samp,tau_samp,logp_prior,img_dir_orig,plot=Fals
             plt.savefig(op.join(img_dir,"polyND%s_trace.png"%(extratext)),bbox_inches='tight',dpi=300)
             trace_df2 = trace.to_dataframe(groups='posterior')
             trace_df = trace.to_dataframe(groups='warmup_posterior')
-            trace_df.append(trace_df2,ignore_index=True)
-            randinds = np.random.randint(0,xx[0].size,2)
-            lr, hr = randinds[0], randinds[1]
-            cols_to_keep = [(f'ngrid[{lr}]', lr), (f'taugrid[{hr}]', hr), 'log_width','log_width2','rho']
+            trace_df = trace_df.append(trace_df2,ignore_index=True)
+            randinds = np.random.choice(tot_just_right,2,replace=False)
+            lr, hr = min(randinds), max(randinds)
+            cols_to_keep = [(f'ncoef[{lr}]', lr), (f'ncoef[{hr}]', hr), 'log_width']
             fig = corner.corner(trace_df[cols_to_keep])
             fig.savefig(op.join(img_dir,"trace_with_tune%s.png"%(extratext)))
             fig = corner.corner(trace_df2[cols_to_keep])
             fig.savefig(op.join(img_dir,"trace%s.png"%(extratext)))
         print(az.summary(trace,round_to=2))
 
-    return trace, a_poly_T, xx
+    return trace, ind_just_right
 
-def polyNDDataBivarOrig(indep_samp,n_samp,tau_samp,logp_prior,img_dir_orig,plot=False,extratext='',degree=2,sampling=1000,tune=1000,nlim=np.array([-1.0,0.4]),taulim=np.array([0.0,4.0])):
+def polyNDDataBivar(indep_samp,n_samp,tau_samp,logp_prior,img_dir_orig,plot=False,extratext='',degree=2,sampling=1000,tune=1000,nlim=np.array([-1.0,0.4]),taulim=np.array([0.0,4.0])):
     ''' Simulation of data where the dust index n is a 2-D polynomial function of stellar mass and sSFR.
 
     Parameters
@@ -814,13 +767,108 @@ def polyNDDataBivarOrig(indep_samp,n_samp,tau_samp,logp_prior,img_dir_orig,plot=
 
     return trace, a_poly_T, xx
 
+def polyNDDataBivarCD(indep_samp,n_samp,tau_samp,logp_prior,img_dir_orig,plot=False,extratext='',degree=2,sampling=1000,tune=1000,nlim=np.array([-1.0,0.4]),taulim=np.array([0.0,4.0]),order=4):
+    ''' Simulation of data where the dust index n is a 2-D polynomial function of stellar mass and sSFR.
+
+    Parameters
+    ----------
+    indep_samp, dep_samp: 3-D, 2-D Numpy Array
+        Prospector samples for the independent and dependent variables, respectively
+    img_dir_orig: Str
+        Parent directory in which folders will be created for the particular run
+    plot: Bool
+        Whether or not an arviz plot should be made
+    extratext: Str
+        An addition to the plot name to distinguish it from previous runs
+    degree: Int
+        Polynomial degree in each variable
+    sampling: Int
+        Number of draws for sampling (not including burn-in steps)
+    tune: Int
+        Number of burn-in steps for each sampling chain
+    dep_lim: Two-element Numpy Array (or list)
+        Limits for dependent variable
+    uniform: Bool
+        Whether or not prior distribution for dependent variable should be uniform (alternative is clipped Gaussian)
+    Returns
+    -------
+    trace: Pymc3 trace object
+        Result of pymc3 sampler
+    a_poly_T: 2-D Numpy arrays
+        Matrix whose inverse times n_grid gives polynomial coefficients
+    xx: List of 2-D Numpy arrays
+        Meshgrid where dust index is computed
+    
+    The function runs the pymc3 sampler on the Prospector data and prints the results; an arviz plot of the results is also made if plot==True
+    '''
+    # We create a directory for each run, seperated by polynomial degree (and the run-specific text)
+    img_dir = op.join(img_dir_orig,'deg_%d'%(degree),extratext)
+    mkpath(img_dir)
+    ndim = len(indep_samp)
+    sh = tuple(np.repeat(degree+1,len(indep_samp)))
+    totlen = np.prod(sh)
+    ind_just_right, tot_just_right = [], 0
+    for index, i in enumerate(np.ndindex(sh)):
+        if sum(i)<=order: 
+            ind_just_right.append(index)
+            tot_just_right+=1
+    # 3-D array that will be multiplied by coefficients to calculate the dust parameter at the observed independent variable values
+    term = calc_poly_tt(indep_samp,degree)
+    # Pymc3 model creation
+    with pm.Model() as model:
+        # Priors on the parameters ngrid (n over the grid) and log_width (true width of relation)
+        ncoef = pm.Uniform("ncoef",lower=-5.0,upper=5.0,shape=tot_just_right,testval=np.random.uniform(-1.0,1.0,tot_just_right))
+        taucoef = pm.Uniform("taucoef",lower=-5.0,upper=5.0,shape=tot_just_right,testval=np.random.uniform(-1.0,1.0,tot_just_right))
+        log_width = pm.StudentT("log_width", nu=5, mu=-3.0, lam=0.5, testval=-3.5)
+        log_width2 = pm.StudentT("log_width2", nu=5, mu=-2.9, lam=0.48, testval=-3.8)
+        rho = pm.Uniform("rho",lower=-1.0,upper=1.0,testval=np.random.uniform(-0.5,0.5))
+
+        # Compute the expected n at each sample
+        coefs_orig = tt.zeros(totlen)
+        coefs = tt.set_subtensor(coefs_orig[ind_just_right],ncoef)
+        coefs_orig2 = tt.zeros(totlen)
+        coefs2 = tt.set_subtensor(coefs_orig2[ind_just_right],taucoef)
+        mu = tt.tensordot(coefs,term,axes=1)
+        mu2 = tt.tensordot(coefs2,term,axes=1)
+
+        # The line has some width: we're calling it a Gaussian in n,tau
+        zbiv = (n_samp-mu)**2 * pm.math.exp(-2*log_width) + (tau_samp-mu2)**2 * pm.math.exp(-2*log_width2) - 2 * rho * (n_samp-mu) * (tau_samp-mu2) * pm.math.exp(-log_width-log_width2)
+
+        logp = -0.5 * zbiv/(1.0-rho**2) - log_width - log_width2 - pm.math.log(pm.math.sqrt(1-rho**2)) - logp_prior
+
+        # Compute the marginalized likelihood
+        max_logp = tt.max(logp, axis=1)
+        marg_logp = max_logp + pm.math.log(pm.math.sum(pm.math.exp(logp - max_logp[:, None]), axis=1))
+        pm.Potential('marg_logp', marg_logp)
+
+        #Perform the sampling!
+        trace = pm.sample(draws=sampling, tune=tune, init='adapt_full', target_accept=0.9, return_inferencedata=True, chains=4, discard_tuned_samples=False)
+
+        # Use the arviz module to take a look at the results
+        if plot:
+            az.plot_trace(trace)
+            plt.savefig(op.join(img_dir,"polyND%s_trace.png"%(extratext)),bbox_inches='tight',dpi=300)
+            trace_df2 = trace.to_dataframe(groups='posterior')
+            trace_df = trace.to_dataframe(groups='warmup_posterior')
+            trace_df.append(trace_df2,ignore_index=True)
+            randinds = np.random.randint(0,tot_just_right,2)
+            lr, hr = randinds[0], randinds[1]
+            cols_to_keep = [(f'ncoef[{lr}]', lr), (f'taucoef[{hr}]', hr), 'log_width','log_width2','rho']
+            fig = corner.corner(trace_df[cols_to_keep])
+            fig.savefig(op.join(img_dir,"trace_with_tune%s.png"%(extratext)))
+            fig = corner.corner(trace_df2[cols_to_keep])
+            fig.savefig(op.join(img_dir,"trace%s.png"%(extratext)))
+        print(az.summary(trace,round_to=2))
+
+    return trace, ind_just_right
+
 def plot1D(x,y,xx,yy,img_dir,name,xlab=r'$\log\ M_*$',ylab='Median model n',xerr=None,yerr=None,ngrid_err=None):
     fig, ax = plt.subplots()
     indsort = np.argsort(x)
     ax.plot(x[indsort],y[indsort],'b-.',markersize=1)
-    ax.plot(xx,yy,'r^',markersize=2)
+    if yy is not None: ax.plot(xx,yy,'r^',markersize=2)
     if xerr is not None or yerr is not None: ax.errorbar(x,y,yerr=yerr,xerr=xerr,fmt='none',ecolor='b',alpha=np.sqrt(1.0/len(x)))
-    if ngrid_err is not None: ax.errorbar(xx,yy,yerr=ngrid_err,fmt='none',ecolor='r',alpha=1.0)
+    if ngrid_err is not None and yy is not None: ax.errorbar(xx,yy,yerr=ngrid_err,fmt='none',ecolor='r',alpha=1.0)
     ax.set_xlabel(xlab); ax.set_ylabel(ylab)
     fig.savefig(op.join(img_dir,'%s.png'%(name)),bbox_inches='tight',dpi=200)
 
@@ -1151,8 +1199,6 @@ def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep
         taugrid_med = np.median(taugrid,axis=0)
         rho_0 = np.array(getattr(trace.posterior,'rho'))
         rho = rho_0.reshape(sh[0]*sh[1])
-        a_0, sig_n_0 = np.array(getattr(trace.posterior,'a')), np.array(getattr(trace.posterior,'sig_n'))
-        a, sig_n = a_0.reshape(sh[0]*sh[1]), sig_n_0.reshape(sh[0]*sh[1])
     else:
         taugrid, log_width2, rho = None, None, None
     ngrid_med = np.median(ngrid,axis=0)
@@ -1199,13 +1245,8 @@ def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep
             fl.write('%s_%s  '%(dataname, extratext))
             fl.write(f'{degree2}  {ndim2}  {nlen}  {nwid}  {len(log_width)}  {num_div}  ')
             for i_as in rhat_argsort: fl.write('%.4f  '%(rhat_arr[i_as]))
-            if 'bivar' in fl_stats: fl.write('%.4f  %.4f  %.4f  %.4f  %.4f \n'%(np.log(width_med),np.median(log_width2),np.median(rho),np.median(a),np.median(sig_n)))
+            if 'bivar' in fl_stats: fl.write('%.4f  %.4f  %.4f \n'%(np.log(width_med),np.median(log_width2),np.median(rho)))
             else: fl.write('%.4f \n'%(np.log(width_med)))
-    else: 
-        dataname = ''
-        for name in indep_name: dataname += name+'_'
-        if bivar: dataname += 'n_dust2'
-        else: dataname += dep_name
 
     n_sim, tau_sim = getModelSamples(xx, indep_avg, ngrid, log_width, taugrid, log_width2, rho, numsamp=numsamp, poly_only=not rand_add)
     n_mean, n_err = np.mean(n_sim,axis=0), np.std(n_sim,axis=0)
@@ -1227,80 +1268,94 @@ def get_relevant_info_ND_Data(trace,a_poly_T2,xx,indep_samp,n_samp,med_arr,indep
 
     makeColorMapProj(trace, xx, med_arr, indep_lab, indep_name, indep_pickle_name, dataname, img_dir, bivar=bivar, poly_only=not rand_add, numsamp=numsamp, sliced=False, fine_grid=fine_grid, numslices=5, numsamples=nwid, numgal=None, coef_direct=False, dg=degree2,indep=indep_samp,dep_name=dep_name)
     return
+    
+def get_relevant_info_ND_Data_CD(trace,ind_just_right,indep_samp,n_samp,med_arr,indep_name,indep_lab,dep_name='n',dep_lab='n',degree2=2,levels=10,extratext='',fine_grid=201,bins=20,img_dir_orig=op.join('DataTrue','NewTests'),grid_name='ncoef',width_name='log_width',numsamp=50,fl_stats=fl_fit_stats_univar,append_to_file=False,correction=False,rand1=None,rand11=None,rand_add=True,bivar=False,order2=4,obj=None,indfin=None,sliced=False,indep_pickle_name=None,tau_samp=None):
+    nlen, nwid = len(n_samp), len(n_samp[0])
+    ndim2 = len(indep_samp)
+    img_dir = op.join(img_dir_orig,'deg_%d'%(degree2),extratext)
 
-def create_prior(proplist,samplearr,zarr):
-    proparr = ['ssfr', 'mwa', 'stmass', 'dust1', 'dust2', 'met']
-    zlist = np.linspace(0.49999,3.00001,6)
-    # propneed = list(set(proparr)&set(proplist))
-    propneed = []
-    for prop in proparr: 
-        if prop in proplist: propneed.append(prop)
-    filelist, dimlist, indlist = [], [], []
-    n = len(propneed)
-    if n==1:
-        filelist.append('prior_hist_%s'%(propneed[0]))
-        dimlist.append(1)
-        indlist.append(proplist.index(propneed[0]))
-    elif n==2:
-        filelist.append('prior_hist_%s_%s'%(propneed[0],propneed[1]))
-        dimlist.append(2)
-        indlist.append((proplist.index(propneed[0]),proplist.index(propneed[1])))
-    elif n==3:
-        if 'stmass' in propneed:
-            proprem = np.setdiff1d(propneed,['stmass'],assume_unique=True)
-            filelist.append('prior_hist_%s_%s'%(proprem[0],proprem[1]))
-            filelist.append('prior_hist_stmass')
-            indlist.append((proplist.index(proprem[0]),proplist.index(proprem[1])))
-            indlist.append(proplist.index('stmass'))
-        else:
-            filelist.append('prior_hist_%s_%s'%(propneed[0],propneed[1]))
-            filelist.append('prior_hist_%s'%(propneed[2]))
-            indlist.append((proplist.index(propneed[0]),proplist.index(propneed[1])))
-            indlist.append((proplist.index(propneed[2])))
-        dimlist.append(2); dimlist.append(1)
-    elif n==4:
-        if 'stmass' in propneed and 'met' in propneed:
-            proprem = np.setdiff1d(propneed,['stmass','met'],assume_unique=True)
-            filelist.append('prior_hist_%s_%s'%(proprem[0],proprem[1]))
-            filelist.append('prior_hist_stmass_met')
-            indlist.append((proplist.index(proprem[0]),proplist.index(proprem[1])))
-            indlist.append((proplist.index('stmass'),proplist.index('met')))
-        else:
-            filelist.append('prior_hist_%s_%s'%(propneed[0],propneed[1]))
-            filelist.append('prior_hist_%s_%s'%(propneed[2],propneed[3]))
-            indlist.append((proplist.index(propneed[0]),proplist.index(propneed[1])))
-            indlist.append((proplist.index(propneed[2]),proplist.index(propneed[3])))
-        dimlist.append(2); dimlist.append(2)
+    # Determine median model values for the dependent variable
+    ncoef_0, log_width_0 = np.array(getattr(trace.posterior,grid_name)), np.array(getattr(trace.posterior,width_name))
+    sh = ncoef_0.shape
+    ncoef, log_width = ncoef_0.reshape(sh[0]*sh[1],sh[2]), log_width_0.reshape(sh[0]*sh[1])
+    if bivar:
+        taucoef_0, log_width2_0 = np.array(getattr(trace.posterior,'taucoef')), np.array(getattr(trace.posterior,width_name))
+        taucoef, log_width2 = taucoef_0.reshape(sh[0]*sh[1],sh[2]), log_width2_0.reshape(sh[0]*sh[1])
+        taucoef_med = np.median(taucoef,axis=0)
+        coefs_med_tau = np.zeros((degree2+1)**len(indep_samp))
+        coefs_med_tau[ind_just_right] = taucoef_med
+        rho_0 = np.array(getattr(trace.posterior,'rho'))
+        rho = rho_0.reshape(sh[0]*sh[1])
     else:
-        for index in range(0,len(propneed),2):
-            if index+1 < len(propneed): 
-                filelist.append('prior_hist_%s_%s'%(propneed[index],propneed[index+1]))
-                dimlist.append(2)
-                indlist.append((proplist.index(propneed[index]),proplist.index(propneed[index+1])))
-            else: 
-                filelist.append('prior_hist_%s'%(propneed[index]))
-                dimlist.append(1)
-                indlist.append(proplist.index(propneed[index]))
-    logprior = np.zeros_like(samplearr)
-    sh = list(samplearr.shape)[1:]
-    sh.insert(0,len(zlist))
-    priordiffz = np.zeros(tuple(sh))
-    for fi,dim,ind in zip(filelist,dimlist,indlist):
-        if dim==1:
-            for i,z in enumerate(zlist):
-                x, pdf = np.loadtxt(op.join('Prior','Hists',fi+'_%.2f.dat'%(z)),unpack=True)
-                priordiffz[i] += np.log(np.interp(samplearr[ind],x,pdf,left=min_pdf, right=min_pdf))
-        else:
-            for i,z in enumerate(zlist):
-                every = np.loadtxt(op.join('Prior','Hists',fi+'_%.2f.dat'%(z)))
-                xx, yy = np.meshgrid(every[:,0],every[:,1])
-                pdf = LinearNDInterpolator(np.column_stack((xx.ravel(),yy.ravel())),every[:,2:].ravel(),fill_value=min_pdf)
-                priordiffz[i] += np.log(pdf(samplearr[ind[0]],samplearr[ind[1]]))
-    indarr = np.searchsorted(zlist,zarr)
-    priordiff = np.zeros_like(samplearr[0])
-    for i,ind in enumerate(indarr):
-        priordiff[i] = (zlist[ind]-zarr[i])*priordiffz[ind-1,i,:] + (zarr[i]-zlist[ind-1])*priordiffz[ind,i,:]
-    return priordiff
+        taucoef, log_width2, rho = None, None, None
+    ncoef_med = np.median(ncoef,axis=0)
+    width_med = np.exp(np.median(log_width))
+    width_mean = np.exp(np.mean(log_width))
+    coefs_med = np.zeros((degree2+1)**len(indep_samp))
+    coefs_med[ind_just_right] = ncoef_med
+    n_med = calc_poly(indep_samp,coefs_med,degree2)
+    indep_avg = np.mean(indep_samp,axis=2)
+
+    if not correction: trace.to_netcdf(op.join(img_dir,'trace_%s.nc'%(extratext)))
+
+    n_sim, tau_sim = getModelSamplesCD(indep_avg,ind_just_right,ncoef,log_width,taucoef,log_width2,rho,numsamp=numsamp,dg=degree2)
+    n_mean, n_err = np.mean(n_sim,axis=0), np.std(n_sim,axis=0)
+
+    if append_to_file:
+        dataarr = np.empty((coefs_med.size,0))
+        colnames = []
+        dataname = ''
+        for name in indep_name: dataname += name+'_'
+        if 'univar' in fl_stats: 
+            dataarr = np.append(dataarr,coefs_med[:,None],axis=1); colnames.append(grid_name)
+            dataname+=dep_name
+        else: 
+            dataarr = np.append(dataarr,coefs_med[:,None],axis=1); colnames.append('ncoef')
+            dataarr = np.append(dataarr,coefs_med_tau[:,None],axis=1); colnames.append('taucoef')
+            dataname+='n_dust2'
+        med_write = np.zeros(coefs_med.size)
+        med_write[:len(med_arr)] = med_arr
+        dataarr = np.append(dataarr,med_write[:,None],axis=1); colnames.append('IndVarMedians')
+        # np.savetxt(op.join(img_dir,'ngrid_%s%s_%s_vi%d.dat'%(dataname,dep_name,extratext,var_inf)),dataarr,header='%s  ngrid'%('  '.join(indep_name)),fmt='%.5f')
+        t = Table(dataarr,names=colnames)
+        t.write(op.join(img_dir,'PolyCoefs_%s_%s_HB.dat'%(dataname,extratext)),overwrite=True,format='ascii')
+        if not correction: trace.to_netcdf(op.join(img_dir,'trace_%s_%s.nc'%(dataname,extratext)))
+        # pm.save_trace(trace,directory=img_dir)
+        rhat_arr = []
+        rhats = az.rhat(trace)
+        rhat_keys = list(rhats.keys())
+        for key in rhat_keys:
+            val = rhats[key].values
+            if val.ndim==0: rhat_arr+=[float(val)]
+            else: rhat_arr+=[max(val)]
+        num_div = len(trace.sample_stats.diverging.values.nonzero()[0])
+        print("rhat_keys:", rhat_keys)
+        rhat_argsort = np.argsort(rhat_keys)
+        with open(fl_stats,'a') as fl:
+            fl.write('%s_%s  '%(dataname, extratext))
+            fl.write(f'{degree2}  {ndim2}  {nlen}  {nwid}  {len(log_width)}  {num_div}  ')
+            for i_as in rhat_argsort: fl.write('%.4f  '%(rhat_arr[i_as]))
+            if 'bivar' in fl_stats: fl.write('%.4f  %.4f  %.4f \n'%(np.log(width_med),np.median(log_width2),np.median(rho)))
+            else: fl.write('%.4f \n'%(np.log(width_med)))
+
+    plot_model_true(np.mean(n_samp,axis=1),n_mean,None,None,img_dir,'Real_%s_comp_%s'%(dep_name,extratext),n_err=n_err,width_true=np.std(n_samp,axis=1),ylab='Mean posterior model %s (at mean location)'%(dep_lab), xlab='Observed %s (Prospector posterior means)'%(dep_lab),ngrid_true_plot=False)
+
+    if bivar: 
+        tau_mean, tau_err = np.mean(tau_sim,axis=0), np.std(tau_sim,axis=0)
+        plot_model_true(np.mean(tau_samp,axis=1),tau_mean,None,None,img_dir,'Real_d2_comp_%s'%(extratext),n_err=tau_err,width_true=np.std(tau_samp,axis=1),ylab='Mean posterior model %s (at mean location)'%(taulab), xlab='Observed %s (Prospector posterior means)'%(taulab),ngrid_true_plot=False)
+
+    if ndim2==1:
+        x = np.linspace(np.amin(indep_samp[0]),np.amax(indep_samp[0]),fine_grid)
+        n_sim2, tau_sim2 = getModelSamplesCD(x[None,:],ind_just_right,ncoef,log_width,taucoef,log_width2,rho,numsamp=numsamp,poly_only=False,dg=degree2)
+        n_mean2, n_err2 = np.mean(n_sim2,axis=0), np.std(n_sim2,axis=0)
+        plot1D(x+med_arr[0],n_mean2,None,None,img_dir,'Real_Model_%s_%s_%s_rd_%d'%(indep_name[0],dep_name,extratext,rand_add),xlab=indep_lab[0],ylab='Mean posterior model '+dep_lab,yerr=n_err2)
+        if bivar:
+            tau_mean2, tau_err2 = np.mean(tau_sim2,axis=0), np.std(tau_sim2,axis=0)
+            plot1D(x+med_arr[0],tau_mean2,None,None,img_dir,'Real_Model_%s_d2_%s_rd_%d'%(indep_name[0],extratext,rand_add),xlab=indep_lab[0],ylab='Mean posterior model '+taulab,yerr=tau_err2)
+        return
+
+    makeColorMapProj(trace,indep_samp,med_arr,indep_lab,indep_name,indep_pickle_name,extratext,img_dir,bivar=bivar,poly_only=False,numsamp=numsamp,sliced=False,fine_grid=fine_grid,numslices=5,numsamples=nwid,numgal=None,coef_direct=True,ind_just_right=ind_just_right,dg=degree2,dep_name=dep_name)  
+    return
 
 def KDEApproach(data):
     # use grid search cross-validation to optimize the bandwidth
@@ -1344,8 +1399,7 @@ def getKDE(proplist,samplearr,zarr):
         cond = ssfr>=ssfr_lim_prior
         data = np.empty((len(ssfr[cond]),len(proplist)))
         for i,prop in enumerate(proplist):
-            if prop=='sfr': data[:,i] = np.array(obj['ssfr'])[cond] + np.array(obj['stmass'])[cond]
-            else: data[:,i] = np.array(obj[prop])[cond]
+            data[:,i] = np.array(obj[prop])[cond]
         print("About to run KDE code on data, with shape",data.shape)
         # kde = KDEApproach(data)
         kde = KernelDensity(bandwidth=0.2*len(proplist)-0.1,algorithm='auto', kernel='gaussian', metric='euclidean', atol=1.0e-5, rtol=1.0e-5, breadth_first=True, leaf_size=40)
@@ -1459,17 +1513,17 @@ def plotPrior2D(samplearr,kde,propnames,proplabs,gridding=201,extratext=''):
 
 def make_prop_dict():
     prop_dict, dep_dict = {}, {}
-    prop_dict['names'] = {'logM': 'logM', 'ssfr': 'logsSFR', 'sfr': 'logSFR', 'logZ': 'logZ', 'z': 'z', 'i':'axis_ratio', 'd1':'dust1', 'd2':'dust2'}
+    prop_dict['names'] = {'logM': 'logM', 'ssfr': 'logsSFR', 'logZ': 'logZ', 'z': 'z', 'i':'axis_ratio', 'd1':'dust1', 'd2':'dust2'}
     dep_dict['names'] = {'tau2': 'dust2', 'n': 'n'}
-    prop_dict['labels'] = {'logM': r'$\log M_*$', 'ssfr': r'$\log$ sSFR$_{\rm{100}}$', 'sfr': r'$\log$ SFR$_{\rm{100}}$', 'logZ': r'$\log (Z/Z_\odot)$', 'z': 'z', 'i':r'$b/a$', 'd1':r"$\hat{\tau}_{1}$", 'd2':r"$\hat{\tau}_{2}$"}
+    prop_dict['labels'] = {'logM': r'$\log M_*$', 'ssfr': r'$\log$ sSFR$_{\rm{100}}$', 'logZ': r'$\log (Z/Z_\odot)$', 'z': 'z', 'i':r'$b/a$', 'd1':r"$\hat{\tau}_{1}$", 'd2':r"$\hat{\tau}_{2}$"}
     dep_dict['labels'] = {'tau2': r"$\hat{\tau}_{2}$", 'n': 'n'}
-    prop_dict['pickle_names'] = {'logM': 'stellar_mass', 'ssfr': 'ssfr_100', 'sfr': 'sfr_100', 'logZ': 'log_z_zsun', 'z': 'z', 'i':'inc', 'd1':'dust1', 'd2':'dust2'}
+    prop_dict['pickle_names'] = {'logM': 'stellar_mass', 'ssfr': 'ssfr_100', 'logZ': 'log_z_zsun', 'z': 'z', 'i':'inc', 'd1':'dust1', 'd2':'dust2'}
     dep_dict['pickle_names'] = {'tau2': 'dust2', 'n': 'dust_index'}
-    prop_dict['sigma'] = {'logM': 0.0732, 'ssfr': 0.214, 'sfr': 0.2, 'logZ': 0.189, 'z': 0.005, 'i': 0.06, 'd1': 0.136, 'd2': 0.116}
+    prop_dict['sigma'] = {'logM': 0.0732, 'ssfr': 0.214, 'logZ': 0.189, 'z': 0.005, 'i': 0.06, 'd1': 0.136, 'd2': 0.116}
     dep_dict['sigma'] = {'tau2': 0.116, 'n': 0.191}
-    prop_dict['med'] = {'logM': 9.91, 'ssfr': -9.30, 'sfr': 0.61, 'logZ': -0.26, 'z': 1.10, 'i': 0.485, 'd1': 0.221, 'd2': 0.239}
-    prop_dict['min'] = {'logM': -1.193, 'ssfr': -2.697, 'sfr': -3.0, 'logZ': -1.710, 'z': -0.605, 'i': 0, 'd1': 0, 'd2': 0}
-    prop_dict['max'] = {'logM': 1.907, 'ssfr': 1.393, 'sfr': 2.5, 'logZ': 0.446, 'z': 1.894, 'i': 1.0, 'd1': 4.8, 'd2': 4.0}
+    prop_dict['med'] = {'logM': 9.91, 'ssfr': -9.30, 'logZ': -0.26, 'z': 1.10, 'i': 0.485, 'd1': 0.221, 'd2': 0.239}
+    prop_dict['min'] = {'logM': -1.193, 'ssfr': -2.697, 'logZ': -1.710, 'z': -0.605, 'i': 0, 'd1': 0, 'd2': 0}
+    prop_dict['max'] = {'logM': 1.907, 'ssfr': 1.393, 'logZ': 0.446, 'z': 1.894, 'i': 1.0, 'd1': 4.8, 'd2': 4.0}
     return prop_dict, dep_dict
 
 def data_simulation(args,prop_dict):
@@ -1547,7 +1601,6 @@ def data_true(args):
     tau1 = obj['dust1']
     tau2 = obj['dust2']
     inc = obj['inc']
-    sfr = np.log10(obj['sfr_100'])
     # comb = np.array([ssfr,logZ])
     per = np.percentile(ssfr,[1.0,99.0])
     masscomp = mass_completeness(z)
@@ -1578,13 +1631,6 @@ def data_true(args):
         prior_samp = np.append(prior_samp,ssfr[indfin][None,:,:],axis=0)
         prior_prop.append('ssfr')
         prior_lab.append(r'$\log$ sSFR$_{\rm{100}}$')
-    if args.sfr_mod: 
-        md = np.median(sfr[indfin])
-        indep_samp = np.append(indep_samp,sfr[indfin][None,:,:]-md,axis=0)
-        med_mod = np.append(med_mod,md)
-        prior_samp = np.append(prior_samp,sfr[indfin][None,:,:],axis=0)
-        prior_prop.append('sfr')
-        prior_lab.append(r'$\log$ SFR$_{\rm{100}}$')
     if args.logZ_mod: 
         md = np.median(logZ[indfin])
         indep_samp = np.append(indep_samp,logZ[indfin][None,:,:]-md,axis=0)
@@ -1664,38 +1710,42 @@ def main(args=None):
     print(args)
 
     indep_name, indep_name2, indep_lab, indep_lab2, indep_pickle_name, indep_pickle_name2, sigarr, sigarr2, sigN, dep_name, dep_lab, nlim = label_creation(args,prop_dict,dep_dict)
-    args.indep_name = indep_name2
 
     if args.real: 
         img_dir_orig = op.join('DataTrue',args.dir_orig)
         indep_samp, dep_samp, prior_samp, med_mod, zarr, prior_prop, prior_lab, uniform = data_true(args)
+        # breakpoint()
         print("Finished getting data")
-        if args.already_done:
-            img_dir_orig, args.dataname = op.join('DataFinal',args.dir_orig), args.extratext
-            trace, xx, _ = dac.getPostModelData(args,img_dir_orig=img_dir_orig)
-            app_to_file, a_poly_T = False, None
-        else:
-            app_to_file=True
-            if len(prior_prop)>=1: 
-                # logp_prior_orig = create_prior(prior_prop,prior_samp,zarr)
-                # print("Finished creating original 1-D/2-D prior combination")
-                # getKDEPrior(prior_prop,prior_lab)
-                logp_prior = getKDE(prior_prop,prior_samp,zarr)
-                # logp_prior_simp = getKDEsimple(prior_prop,prior_samp,proplab=prior_lab)
-                print("Finished all KDE Calculations")
-                print("Nans/infs in logp_prior:",np.isnan(logp_prior).any() or np.isinf(logp_prior).any())
-                # logp_prior = 0.0
-            else: logp_prior = 0.0
-            # print(logp_prior_orig-np.amin(logp_prior_orig),logp_prior-np.amin(logp_prior))
+        if len(prior_prop)>=1: 
+            # logp_prior_orig = create_prior(prior_prop,prior_samp,zarr)
+            # print("Finished creating original 1-D/2-D prior combination")
+            # getKDEPrior(prior_prop,prior_lab)
+            logp_prior = getKDE(prior_prop,prior_samp,zarr)
+            # logp_prior_simp = getKDEsimple(prior_prop,prior_samp,proplab=prior_lab)
+            print("Finished all KDE Calculations")
+            print("Nans/infs in logp_prior:",np.isnan(logp_prior).any() or np.isinf(logp_prior).any())
+            # logp_prior = 0.0
+        else: logp_prior = 0.0
+        # print(logp_prior_orig-np.amin(logp_prior_orig),logp_prior-np.amin(logp_prior))
         if args.bivar:
-            if not args.already_done: trace, a_poly_T, xx = polyNDDataBivar(indep_samp,dep_samp[0],dep_samp[1],logp_prior,img_dir_orig,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,tune=args.tune)
+            if args.coef_direct:
+                trace, ind_just_right = polyNDDataBivarCD(indep_samp,dep_samp[0],dep_samp[1],logp_prior,img_dir_orig,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,tune=args.tune,order=args.order2)
 
-            get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp[0],med_mod,indep_name2,indep_lab2,degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,fl_stats=fl_fit_stats_bivar,bivar=True,rand_add=args.random,tau_samp=dep_samp[1],indep_pickle_name=indep_pickle_name2,append_to_file=app_to_file)
+                get_relevant_info_ND_Data_CD(trace,ind_just_right,indep_samp,dep_samp[0],med_mod,indep_name2,indep_lab2,degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,fl_stats=fl_fit_stats_bivar_CD,append_to_file=True,bivar=True,order2=args.order2,indep_pickle_name=indep_pickle_name2,tau_samp=dep_samp[1],rand_add=args.random)
+            else:
+                trace, a_poly_T, xx = polyNDDataBivar(indep_samp,dep_samp[0],dep_samp[1],logp_prior,img_dir_orig,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,tune=args.tune)
+
+                get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp[0],med_mod,indep_name2,indep_lab2,degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,fl_stats=fl_fit_stats_bivar,bivar=True,rand_add=args.random,tau_samp=dep_samp[1],indep_pickle_name=indep_pickle_name2)
 
         else:
-            if not args.already_done: trace, a_poly_T, xx = polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,dep_lim=nlim,tune=args.tune,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,uniform=uniform)
+            if args.coef_direct:
+                trace, ind_just_right = polyNDDataCD(indep_samp,dep_samp,logp_prior,img_dir_orig,dep_lim=nlim,tune=args.tune,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,uniform=uniform,order=args.order2)
 
-            get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp,med_mod,indep_name2,indep_lab2,dep_name=dep_name,dep_lab=dep_lab,degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,fl_stats=fl_fit_stats_univar,append_to_file=app_to_file,rand_add=args.random,bivar=False,indep_pickle_name=indep_pickle_name2)
+                get_relevant_info_ND_Data_CD(trace,ind_just_right,indep_samp,dep_samp,med_mod,indep_name2,indep_lab2,dep_name=dep_name,dep_lab=dep_lab,degree2=args.degree2,extratext=args.extratext,order2=args.order2,sliced=False,img_dir_orig=img_dir_orig,indep_pickle_name=indep_pickle_name2,fl_stats=fl_fit_stats_univar_CD,append_to_file=True,rand_add=args.random)
+            else:
+                trace, a_poly_T, xx = polyNDData(indep_samp,dep_samp,logp_prior,img_dir_orig,dep_lim=nlim,tune=args.tune,plot=args.plot,extratext=args.extratext,degree=args.degree2,sampling=args.steps,uniform=uniform)
+
+                get_relevant_info_ND_Data(trace,a_poly_T,xx,indep_samp,dep_samp,med_mod,indep_name2,indep_lab2,dep_name=dep_name,dep_lab=dep_lab,degree2=args.degree2,extratext=args.extratext,img_dir_orig=img_dir_orig,fl_stats=fl_fit_stats_univar,append_to_file=True,rand_add=args.random,bivar=False,indep_pickle_name=indep_pickle_name2)
 
     else: 
         img_dir_orig = op.join('DataSim',args.dir_orig)

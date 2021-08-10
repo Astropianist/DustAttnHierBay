@@ -126,6 +126,20 @@ def get_a_polynd(xx):
 
     return a
 
+def get_a_polynd_order(xx, order=100):
+    ''' Same as polyfitnd but just returning array that depends on grid points that goes into the least squares calculation '''
+    a = np.zeros((xx[0].size,xx[0].size))
+    for index, i in enumerate(np.ndindex(xx[0].shape)):
+        if sum(i)>order:
+            arr = np.zeros_like(xx[0])
+        else:
+            arr = 1
+            for j,ind in enumerate(i):
+                arr *= xx[j]**ind
+        a[index] = arr.flatten()
+
+    return a
+
 def polyfitnd(xx,z):
     '''
     N-dimensional polynomial fitting by least squares.
@@ -155,6 +169,35 @@ def polyfitnd(xx,z):
             arr *= xx[j]**ind
         a[index] = arr.flatten()
 
+    return np.linalg.lstsq(a.T,z,rcond=None)[0]
+
+def polyfitnd_order(xx,z,order=100):
+    '''
+    N-dimensional polynomial fitting by least squares.
+    Fits the functional form f(x-vector) = z.
+
+    Parameters
+    ----------
+    xx: np.ndarray, 3d
+        Meshgrid of all variables being considered; each variable should have degree+1 points in the grid, where degree is the desired degree (same for all variables)
+    z: np.ndarray, 1d
+        Polynomial value at each point of the grid, flattened out
+    order: int, default is 100
+        Coefficients up to a maximum of sum(degree_given_variable) <= order are considered.
+
+    Returns
+    -------
+    soln: np.ndarray (1-D if z is 1-D; 2-D if z is 2-D)
+        Array of polynomial coefficients.
+    '''
+    a = np.zeros((xx[0].size,xx[0].size))
+    for index, i in enumerate(np.ndindex(xx[0].shape)):
+        if sum(i)>order: arr = np.zeros_like(xx[0])
+        else:
+            arr = 1
+            for j,ind in enumerate(i):
+                arr *= xx[j]**ind
+        a[index] = arr.flatten()
     return np.linalg.lstsq(a.T,z,rcond=None)[0]
 
 def calc_poly(inputarr,coefs,degree):
